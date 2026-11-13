@@ -204,8 +204,9 @@ export interface PaperView {
 }
 
 /** Собрать вид для «решателя»: только открытые к этому дню инструменты, опрос — по трём вопросам. */
-export function paperView(c: CaseFile, day: number, questions: number[] = [0, 1, 2], words: number[] = [0, 1, 2]): PaperView {
+export function paperView(c: CaseFile, day: number, questions: number[] = [0, 1, 2], words: number[] = [0, 1, 2], toolsDay = day): PaperView {
   const t = c.tools
+  const td = Math.max(day, toolsDay)
   return {
     day,
     today: formatDate(day),
@@ -213,12 +214,12 @@ export function paperView(c: CaseFile, day: number, questions: number[] = [0, 1,
     claim: { model: c.claim.model, serial: c.claim.serial },
     plate: c.plate,
     diagText: c.diag.text,
-    log: day >= TOOL_DAY.log ? t.log.map((e) => e.text) : undefined,
-    opros: day >= TOOL_DAY.opros ? questions.map((i) => ({ answer: t.answers[i]!, canon: t.canon[i]! })) : undefined,
-    partitions: day >= TOOL_DAY.memory ? t.memory.parts.map((p) => p.name) : undefined,
-    seals: day >= TOOL_DAY.lamp ? t.seals : undefined,
-    stress: day >= TOOL_DAY.stress ? words.map((i) => t.stress[i]!) : undefined,
-    radio: day >= TOOL_DAY.radio ? t.radio.length : undefined,
+    log: td >= TOOL_DAY.log ? t.log.map((e) => e.text) : undefined,
+    opros: td >= TOOL_DAY.opros ? questions.map((i) => ({ answer: t.answers[i]!, canon: t.canon[i]! })) : undefined,
+    partitions: td >= TOOL_DAY.memory ? t.memory.parts.map((p) => p.name) : undefined,
+    seals: td >= TOOL_DAY.lamp ? t.seals : undefined,
+    stress: td >= TOOL_DAY.stress ? words.map((i) => t.stress[i]!) : undefined,
+    radio: td >= TOOL_DAY.radio ? t.radio.length : undefined,
   }
 }
 

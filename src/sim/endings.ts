@@ -7,6 +7,8 @@ import type { EndingId, Verdict } from './types'
 export const CORP_FLOOR = 15
 /** Сколько раз можно попасться ОБ (меченый конверт, пожалел маяк, отдал маяк подполью, нашли Кэша). */
 export const STRIKES_ARREST = 3
+/** Всего концовок в галерее. */
+export const ENDINGS_COUNT = 9
 
 /** Ранняя концовка: жизнь вынесла приговор до конца кампании. */
 export function earlyEnding(c: Campaign): EndingId | null {

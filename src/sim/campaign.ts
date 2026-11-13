@@ -62,6 +62,8 @@ export interface Campaign {
   /** Отчёт последней смены — для вечера и газеты. */
   last?: ShiftReport
   flags: Record<string, boolean>
+  /** «Вторая смена» (новая игра+): 1 — идёт повторный забег. */
+  plus?: number
 }
 
 export interface ShiftReport {
@@ -75,14 +77,21 @@ export interface ShiftReport {
   cliff: Cliffhanger
 }
 
-export function newCampaign(seed: string): Campaign {
+/** Во «Второй смене» на сколько сбросов квота жёстче. */
+export const PLUS_QUOTA = 1
+
+/**
+ * Новая кампания. plus — «Вторая смена»: обучение уже пройдено, забег начинается со второй ночи,
+ * все инструменты на столе с первого дня, квоты жёстче, приходят новые сюжетные дела.
+ */
+export function newCampaign(seed: string, plus = 0): Campaign {
   const rng = new Rng(`${seed}:kesh`)
   return {
     v: SAVE_VERSION,
     seed,
-    day: 0,
+    day: plus ? 1 : 0,
     phase: 'shift',
-    money: 30,
+    money: plus ? 40 : 30,
     scales: { corp: 50, under: 0, alarm: 10 },
     heat: 0,
     kesh: rng.pick(['sincere', 'provocateur', 'manipulator'] as const),
@@ -92,7 +101,8 @@ export function newCampaign(seed: string): Campaign {
     strikes: 0,
     unpaid: { door: 0, heat: 0, food: 0, link: 0, kesh: 0 },
     history: [],
-    flags: {},
+    flags: plus ? { plus: true } : {},
+    ...(plus ? { plus } : {}),
   }
 }
 
@@ -126,6 +136,8 @@ export function setupShift(c: Campaign): ShiftState {
     story: c.day === 0 ? [] : storyFor(c.day, storyCtx(c)),
     humans: humansFor(c),
     endOnLast: final,
+    toolsDay: c.plus ? FINAL_DAY : c.day,
+    quotaBonus: c.plus ? PLUS_QUOTA : 0,
   })
 }
 

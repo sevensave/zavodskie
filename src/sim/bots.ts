@@ -77,9 +77,9 @@ export interface PlayResult {
 }
 
 /** Прогон всей кампании ботом: минута на дело, счета по приоритету, пока хватает денег. */
-export function play(seed: string, bot: Bot): PlayResult {
+export function play(seed: string, bot: Bot, plus = 0): PlayResult {
   const rng = new Rng(`${seed}:${bot}`)
-  let c = newCampaign(seed)
+  let c = newCampaign(seed, plus)
   let minMoney = c.money
   const log: number[] = []
   let lastDay = 0

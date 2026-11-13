@@ -114,6 +114,8 @@ export class Desk extends Container implements FolderHost {
   private shakeLeft = 0
   cameraOn = true
   private ending = false
+  /** Режимы подменяют строку кассы на доске своей (очки, жизни). */
+  boardLine: (() => { text: string; color: ColorKey }) | null = null
 
   constructor(
     state: ShiftState,
@@ -147,7 +149,7 @@ export class Desk extends Container implements FolderHost {
     this.terminal.drawer.addChild(this.junkBtn)
 
     this.drawDeskSurface()
-    this.folder = new Folder(this, state.day)
+    this.folder = new Folder(this, state.toolsDay, state.day)
     this.world.addChild(this.folder, this.claim)
 
     // Панель действий.
@@ -334,10 +336,15 @@ export class Desk extends Container implements FolderHost {
     this.refreshInspect()
   }
 
-  private refreshBoard() {
+  refreshBoard() {
     this.boardDynamic.removeChildren()
     const s = this.state
     const sep = new Graphics().rect(0, -2, 100, 1).fill(col('fog'))
+    if (this.boardLine) {
+      const l = this.boardLine()
+      this.boardDynamic.addChild(sep, label(l.text, l.color))
+      return
+    }
     const money = label(`Касса ${s.scales.money} р.`, 'ink')
     const warn = label(`Пред. ${Math.min(s.warnings, 2)}/2`, s.warnings >= 2 ? 'red' : 'ink')
     warn.x = 102 - warn.width
@@ -639,6 +646,7 @@ export class Desk extends Container implements FolderHost {
   private offerBribe(c: CaseFile) {
     const b = c.bribe!
     const want = BRIBES.wants[b.wants] ?? ''
+    sfx.coin()
     this.say('owner', `${BRIBES.offer[c.id.length % BRIBES.offer.length]} ${want}`)
     // Конверт ложится на стойку перед посетителем: бумаги он не закрывает.
     const g = new Graphics()
@@ -787,7 +795,7 @@ export class Desk extends Container implements FolderHost {
     const t = new Sprite(lineTexture(text, color, 2))
     t.position.set(x + 5, y + 4)
     this.stampMark.addChild(g, t)
-    sfx.stamp()
+    sfx.stamp(v === 'scrap' || v === 'junk' || v === 'security')
     this.shake(150)
 
     this.envelope.removeChildren()

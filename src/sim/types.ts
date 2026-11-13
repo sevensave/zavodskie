@@ -104,6 +104,8 @@ export interface CaseFile {
   look: VisitorLook
   tools: ToolData
   bribe?: Bribe
+  /** Личность из «Картотеки»: назовётся после штампа. */
+  persona?: string
 }
 
 export interface Scales {

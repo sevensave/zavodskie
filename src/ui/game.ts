@@ -13,9 +13,15 @@ import { DayScript } from './dayscript'
 import { Desk } from './desk'
 import { col, H, W } from './gfx'
 import { Button } from './kit'
-import { sfx, unlockAudio } from './sfx'
+import { isMuted, setMood, setMuted, sfx, tickAmbience, unlockAudio } from './sfx'
 import { Shift1Script } from './shift1script'
 import { saveSlot } from './storage'
+import { ModeScript } from './modescript'
+import { AchView, FilesView, ModesView, Toaster } from './metaviews'
+import { ACHIEVEMENTS } from '../content/achievements'
+import { MODES_TEXT, type EndlessMod } from '../content/modes'
+import { applyMeta, emptyMeta, META_VERSION, type Meta, type MetaEvent } from '../sim/meta'
+import { dailyCode, dailyKesh, dailyKey, dailyScore, endlessDay, endlessScore, setupDaily, setupEndless } from '../sim/modes'
 import { Summary } from './summary'
 import { Home } from './home'
 import { loadSlot } from './storage'
@@ -98,14 +104,63 @@ export async function boot(host: HTMLElement) {
   let campaign: Campaign = (await loadCampaign()) ?? newCampaign(`ночь-${Math.floor(Math.random() * 1e9)}`)
   const loaded = await loadSlot<Gallery>('gallery')
   let gallery: Gallery = loaded && loaded.v === 1 ? loaded : emptyGallery()
-  let galleryView: GalleryView | null = null
-  const openGallery = () => {
-    if (galleryView) return
-    galleryView = new GalleryView(gallery, () => {
-      galleryView?.destroy({ children: true })
-      galleryView = null
-    })
-    app.stage.addChildAt(galleryView, app.stage.children.length - 1)
+  const settings = (await loadSlot<{ muted?: boolean }>('settings')) ?? {}
+  setMuted(!!settings.muted)
+  const loadedMeta = await loadSlot<Meta>('meta')
+  let meta: Meta = loadedMeta && loadedMeta.v === META_VERSION ? { ...emptyMeta(), ...loadedMeta } : emptyMeta()
+  const toaster = new Toaster()
+  /** Учесть событие в мете: картотека, рекорды, достижения. */
+  const award = (e: MetaEvent) => {
+    const r = applyMeta(meta, e)
+    meta = r.meta
+    void saveSlot('meta', meta)
+    for (const id of r.unlocked) toaster.push(ACHIEVEMENTS.find((a) => a.id === id)!.title)
+  }
+  /** Чем сейчас занята стойка: кампанией или режимом. */
+  let mode: 'campaign' | 'daily' | 'endless' = 'campaign'
+
+  let modesView: ModesView | null = null
+  const closeModes = () => {
+    modesView?.destroy({ children: true })
+    modesView = null
+  }
+  const leaveMenus = () => {
+    closeModes()
+    setPaused(false)
+  }
+  const openModes = () => {
+    if (modesView) return
+    const now = new Date()
+    const key = dailyKey(now)
+    const today = { key, label: `${String(now.getDate()).padStart(2, '0')}.${String(now.getMonth() + 1).padStart(2, '0')}` }
+    const view: ModesView = new ModesView(
+      meta,
+      today,
+      {
+        daily: () => {
+          leaveMenus()
+          startDaily()
+        },
+        endless: (mods) => {
+          leaveMenus()
+          startEndless(mods)
+        },
+        plus: () => {
+          leaveMenus()
+          campaign = newCampaign(`ночь-${Math.floor(Math.random() * 1e9)}`, 1)
+          void saveSlot('campaign', campaign)
+          award({ kind: 'plus' })
+          setScene(new Card(MODES_TEXT.plus, ['Обучение вы уже прошли. Ночь вторая.', 'Все инструменты на столе. Квоты выше. Люди — не те, что в прошлый раз.'], 'К СТОЙКЕ', () => route()))
+        },
+        files: () => view.push(new FilesView(meta, () => view.closeSub())),
+        achievements: () => view.push(new AchView(meta, () => view.closeSub())),
+        endings: () => view.push(new GalleryView(gallery, () => view.closeSub())),
+      },
+      closeModes,
+      !!desk,
+    )
+    modesView = view
+    app.stage.addChildAt(view, app.stage.children.length - 1)
   }
   const pause = buildPause(
     () => setPaused(false),
@@ -115,9 +170,15 @@ export async function boot(host: HTMLElement) {
       void saveSlot('campaign', campaign)
       route()
     },
-    openGallery,
+    openModes,
+    () => {
+      setMuted(!isMuted())
+      void saveSlot('settings', { muted: isMuted() })
+      return isMuted()
+    },
   )
   app.stage.addChildAt(pause, app.stage.children.length - 1)
+  app.stage.addChildAt(toaster, app.stage.children.length - 1)
 
   const setScene = (s: Scene) => {
     if (scene) scene.destroy({ children: true })
@@ -125,22 +186,41 @@ export async function boot(host: HTMLElement) {
     root.addChild(s)
     desk = s instanceof Desk ? s : null
     cursor.texture = cursors.arrow
+    // Фон: за стойкой — по акту, дома — холодильник, на концовке — мотив, на карточках — тише.
+    if (desk) {
+      const day = desk.state.day
+      setMood({ kind: 'shift', act: day >= 14 ? 2 : day >= 7 ? 1 : 0, machines: mode === 'campaign' && campaign.branch === 'machines' && day > BRANCH_DAY })
+    } else if (s instanceof Home) setMood({ kind: 'home' })
+    else if (s instanceof EndingScene) setMood({ kind: 'ending' })
+    else setMood({ kind: 'quiet' })
   }
 
   /** Куда идти из сохранения: на смену, домой или к финальной карточке. */
   function route() {
+    mode = 'campaign'
     if (campaignOver(campaign)) {
       if (!campaign.ending) campaign = { ...campaign, phase: 'ending', ending: 'utilized' }
       if (!gallery.seen.includes(campaign.ending!)) {
         gallery = { ...gallery, seen: [...gallery.seen, campaign.ending!] }
         void saveSlot('gallery', gallery)
       }
+      // Концовку в мете считаем один раз, а не при каждой загрузке.
+      if (!campaign.flags.metaEnded) {
+        campaign = { ...campaign, flags: { ...campaign.flags, metaEnded: true } }
+        void saveSlot('campaign', campaign)
+        award({ kind: 'ending', c: campaign, seen: gallery.seen })
+      }
       setScene(
-        new EndingScene(campaign, gallery, () => {
-          campaign = newCampaign(`ночь-${Math.floor(Math.random() * 1e9)}`)
-          void saveSlot('campaign', campaign)
-          route()
-        }),
+        new EndingScene(
+          campaign,
+          gallery,
+          () => {
+            campaign = newCampaign(`ночь-${Math.floor(Math.random() * 1e9)}`)
+            void saveSlot('campaign', campaign)
+            route()
+          },
+          openModes,
+        ),
       )
       return
     }
@@ -155,14 +235,17 @@ export async function boot(host: HTMLElement) {
     const { campaign: next, events } = payBills(campaign, paid)
     campaign = next
     void saveSlot('campaign', campaign)
+    award({ kind: 'home', c: campaign })
     if (campaignOver(campaign)) return route()
     const lines = events.length ? events : ['Ночь прошла тихо. Даже холодильник молчал.']
     const act = ACT_CARDS[campaign.day]
     const turn = campaign.branch && campaign.day === BRANCH_DAY + 2 ? BRANCH_CARDS[campaign.branch] : null
     const head = act ?? turn
     const card = () => setScene(new Card(`СМЕНА ${campaign.day + 1} · ${formatDate(campaign.day)}`, lines, 'К СТОЙКЕ', startShiftScene))
-    if (head) setScene(new Card(head.title, head.lines, 'ДАЛЬШЕ', card))
-    else card()
+    if (head) {
+      setScene(new Card(head.title, head.lines, 'ДАЛЬШЕ', card))
+      sfx.sting()
+    } else card()
   }
 
   function startShiftScene() {
@@ -176,7 +259,49 @@ export async function boot(host: HTMLElement) {
   function finish(s: ShiftState) {
     campaign = closeShift(campaign, s)
     void saveSlot('campaign', campaign)
+    award({ kind: 'shift', mode: 'campaign', s, c: campaign })
     setScene(new Summary(s, campaign.last!, () => route(), campaign.branch))
+  }
+
+  function startDaily() {
+    mode = 'daily'
+    const key = dailyKey(new Date())
+    const state = setupDaily(key)
+    const d = new Desk(state, new ModeScript(state.day, dailyKesh(key), 'daily'), (s) => {
+      const score = dailyScore(s)
+      const code = dailyCode(key, s)
+      award({ kind: 'shift', mode: 'daily', s })
+      award({ kind: 'daily', key, score, code })
+      const [, mm, dd] = key.split('-')
+      setScene(new Card(MODES_TEXT.dailyTitle(`${dd}.${mm}`), MODES_TEXT.dailyLines(score, code, meta.daily[key]?.score ?? score), MODES_TEXT.toCampaign, () => route()))
+    })
+    d.on('cursor', (k: 'arrow' | 'inspect') => (cursor.texture = cursors[k]))
+    setScene(d)
+  }
+
+  function startEndless(mods: EndlessMod[]) {
+    mode = 'endless'
+    const day = endlessDay(meta.bestDay)
+    const seed = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`
+    const state = setupEndless(seed, day, mods)
+    const kesh = (['sincere', 'provocateur', 'manipulator'] as const)[Math.floor(Math.random() * 3)]!
+    const script = new ModeScript(day, kesh, 'endless', mods)
+    const d = new Desk(state, script, (s) => {
+      const now = new Date()
+      const record = {
+        score: endlessScore(script.closed, mods),
+        closed: script.closed,
+        mods,
+        day,
+        date: `${String(now.getDate()).padStart(2, '0')}.${String(now.getMonth() + 1).padStart(2, '0')}`,
+      }
+      award({ kind: 'shift', mode: 'endless', s })
+      award({ kind: 'endless', record })
+      const why = script.outOfLives ? MODES_TEXT.endlessWhyLives : MODES_TEXT.endlessWhyClock
+      setScene(new Card(MODES_TEXT.endlessTitle, MODES_TEXT.endlessLines(record.closed, record.score, meta.endless[0]?.score ?? record.score, why), MODES_TEXT.toCampaign, () => route()))
+    })
+    d.on('cursor', (k: 'arrow' | 'inspect') => (cursor.texture = cursors[k]))
+    setScene(d)
   }
 
   function setPaused(on: boolean) {
@@ -186,7 +311,8 @@ export async function boot(host: HTMLElement) {
 
   addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      setPaused(!pause.visible)
+      if (modesView) closeModes()
+      else setPaused(!pause.visible)
       return
     }
     if (pause.visible) return
@@ -220,12 +346,28 @@ export async function boot(host: HTMLElement) {
         route()
       },
       humansDay: HUMANS_DAY,
+      get meta() {
+        return meta
+      },
+      get mode() {
+        return mode
+      },
+      daily: () => startDaily(),
+      endless: (mods: EndlessMod[] = []) => startEndless(mods),
+      modes: () => openModes(),
+      /** Открыть всё для проверки режимов. */
+      unlock() {
+        meta = { ...meta, bestDay: Math.max(meta.bestDay, 21), finished: Math.max(meta.finished, 1) }
+        void saveSlot('meta', meta)
+      },
     }
   }
 
   app.ticker.add((t) => {
     const dt = Math.min(100, t.deltaMS) * speed
     scene?.update(dt)
+    toaster.update(Math.min(100, t.deltaMS))
+    tickAmbience(Math.min(100, t.deltaMS))
   })
 
   route()
@@ -235,25 +377,25 @@ export async function boot(host: HTMLElement) {
   void sfx
 }
 
-function buildPause(resume: () => void, restart: () => void, gallery: () => void): Container {
+function buildPause(resume: () => void, restart: () => void, modes: () => void, toggleSound: () => boolean): Container {
   const c = new Container()
   const g = new Graphics()
   g.rect(0, 0, W, H).fill({ color: col('ink'), alpha: 0.85 })
-  g.rect(170, 80, 140, 128).fill(col('ink'))
-  g.rect(171, 81, 138, 126).fill(col('night'))
+  g.rect(170, 70, 140, 150).fill(col('ink'))
+  g.rect(171, 71, 138, 148).fill(col('night'))
   c.addChild(g)
   const t = label('ПЕРЕРЫВ', 'amber', 2)
-  t.position.set(240 - t.width / 2, 88)
+  t.position.set(240 - t.width / 2, 78)
   c.addChild(t)
   const style = { bg: 'steel', fg: 'white', edge: 'slate' } as const
   const b1 = new Button('ПРОДОЛЖИТЬ', 110, 14, style, resume)
-  b1.position.set(185, 112)
+  b1.position.set(185, 100)
   const b2 = new Button('ПОЛНЫЙ ЭКРАН', 110, 14, style, () => {
     if (window.zavod) window.zavod.toggleFullscreen()
     else if (document.fullscreenElement) void document.exitFullscreen()
     else void document.documentElement.requestFullscreen()
   })
-  b2.position.set(185, 130)
+  b2.position.set(185, 136)
   // Новая игра стирает кампанию: просим нажать дважды.
   let armed = false
   const b3 = new Button('НОВАЯ ИГРА', 110, 14, style, () => {
@@ -266,13 +408,16 @@ function buildPause(resume: () => void, restart: () => void, gallery: () => void
     b3.setCaption('НОВАЯ ИГРА')
     restart()
   })
-  b3.position.set(185, 148)
-  const b5 = new Button('КОНЦОВКИ', 110, 14, style, gallery)
-  b5.position.set(185, 166)
-  c.addChild(b1, b2, b3, b5)
+  b3.position.set(185, 172)
+  const b5 = new Button('РЕЖИМЫ', 110, 14, style, modes)
+  b5.position.set(185, 118)
+  const soundCaption = (m: boolean) => (m ? 'ЗВУК: ВЫКЛ' : 'ЗВУК: ВКЛ')
+  const b6 = new Button(soundCaption(isMuted()), 110, 14, style, () => b6.setCaption(soundCaption(toggleSound())))
+  b6.position.set(185, 154)
+  c.addChild(b1, b2, b3, b5, b6)
   if (window.zavod) {
     const b4 = new Button('ВЫЙТИ', 110, 14, style, () => window.zavod?.quit())
-    b4.position.set(185, 184)
+    b4.position.set(185, 190)
     c.addChild(b4)
   }
   c.visible = false

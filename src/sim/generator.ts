@@ -1,5 +1,6 @@
 import { HUMAN, MODELS, modelById, type DeviceModel } from '../content/models'
 import { BRIBES } from '../content/home'
+import { FILES } from '../content/files'
 import { ESCORT_EXCUSES, EXCUSES, HUMAN_TALK, NAMES, TALK } from '../content/people'
 import { COATS, HAIR_COLORS, SKINS } from '../content/palette'
 import { CALLSIGNS, LOG_ABUSE, LOG_AWAKE, LOG_ERRORS, LOG_HUMAN, LOG_HUMAN_AWAKE, LOG_ROUTINE, MEMORY_SPEC, PARTITION, QUESTIONS, SEALS, STRESS_WORDS } from '../content/tools'
@@ -257,8 +258,17 @@ export function generateCase(opts: GenOptions): CaseFile {
     bribe = { amount: rng.pick([15, 20, 25, 30, 40]), wants: wants === 'fraud' ? 'return' : wants, agent: owner === 'agent' || rng.chance(0.2) }
   }
 
+  // Личность из картотеки — отдельным потоком, чтобы не сдвигать остальное дело.
+  let persona: string | undefined
+  if (!opts.human && (device === 'awake' || device === 'awake_dangerous' || device === 'courier')) {
+    const pool = FILES.filter((f) => f.model === model.id)
+    const pr = new Rng(`${opts.seed}:${opts.day}:${opts.index}:persona`)
+    if (pool.length && pr.chance(0.7)) persona = pr.pick(pool).id
+  }
+
   return {
     id: `${opts.day}-${opts.index}`,
+    persona,
     modelId: model.id,
     escort,
     device,

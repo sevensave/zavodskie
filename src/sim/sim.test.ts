@@ -29,6 +29,18 @@ describe('генератор дел', () => {
     }
   })
 
+  it('во «Второй смене» все инструменты на столе с первого дня — и дело по-прежнему решается по уликам', () => {
+    const rng = new Rng('вторая')
+    for (let day = 0; day < 21; day++) {
+      for (let i = 0; i < 300; i++) {
+        const c = generateCase({ seed: `p${i}`, day, index: i % 12 })
+        const qs = rng.shuffle([0, 1, 2, 3, 4, 5]).slice(0, 3)
+        const ws = rng.shuffle([0, 1, 2, 3, 4, 5, 6, 7]).slice(0, 3)
+        expect(solveFromPaper(paperView(c, day, qs, ws, 20)), `день ${day}, дело p${i}: ${c.device}/${c.flaw}`).toBe(instructed(c, day).verdict)
+      }
+    }
+  })
+
   it('хитрости появляются не раньше инструментов, которыми их ловят', () => {
     for (let day = 0; day < 21; day++) {
       for (let i = 0; i < 300; i++) {
@@ -179,7 +191,7 @@ describe('сюжетные дела', () => {
 
   function* contexts(): Generator<StoryCtx> {
     for (const kesh of truths) for (const agent of agents) for (const branch of branches) for (const verdicts of pasts) {
-      yield { kesh, agent, branch, verdicts: { ...verdicts } as StoryCtx['verdicts'], flags: {} }
+      for (const flags of [{}, { plus: true }] as Record<string, boolean>[]) yield { kesh, agent, branch, verdicts: { ...verdicts } as StoryCtx['verdicts'], flags }
     }
   }
 
@@ -192,7 +204,8 @@ describe('сюжетные дела', () => {
           for (let t = 0; t < 6; t++) {
             const qs = rng.shuffle([0, 1, 2, 3, 4, 5]).slice(0, 3)
             const ws = rng.shuffle([0, 1, 2, 3, 4, 5, 6, 7]).slice(0, 3)
-            expect(solveFromPaper(paperView(file, day, qs, ws)), `день ${day}, ${file.scripted}: ${file.device}/${file.flaw}`).toBe(instructed(file, day).verdict)
+            const td = x.flags.plus ? 20 : day
+            expect(solveFromPaper(paperView(file, day, qs, ws, td)), `день ${day}, ${file.scripted}: ${file.device}/${file.flaw}`).toBe(instructed(file, day).verdict)
           }
           n++
         }

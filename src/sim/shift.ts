@@ -31,6 +31,8 @@ export interface ShiftState {
   blackouts: number
   /** Темп часов: болезнь и голод его ускоряют. */
   pace: number
+  /** Какие инструменты на столе: как в этот день. Во «Второй смене» — все сразу. */
+  toolsDay: number
   flags: { agentBribe: boolean; plantSpared: boolean; plantJunk: boolean; cheatedBriber: boolean; selfScan: boolean }
 }
 
@@ -64,6 +66,12 @@ export interface StartOptions {
   humans?: 'none' | 'half' | 'all'
   /** Очередь кончается на последнем сюжетном деле (финальная смена). */
   endOnLast?: boolean
+  /** Инструменты как в этот день (по умолчанию — как в текущий). */
+  toolsDay?: number
+  /** Квота жёстче обычной на столько сбросов. */
+  quotaBonus?: number
+  /** С какой минуты начинаются часы (0 — 22:00). */
+  startClock?: number
 }
 
 export function startShift(seed: string, day: number, scripted: CaseFile[], generated: number, opts: StartOptions = {}): ShiftState {
@@ -82,17 +90,18 @@ export function startShift(seed: string, day: number, scripted: CaseFile[], gene
   return {
     seed,
     day,
-    clock: 0,
+    clock: opts.startClock ?? 0,
     queue,
     index: 0,
     results: [],
     scales,
     warnings: 0,
     over: false,
-    quota: quotaForDay(day),
+    quota: quotaForDay(day) + (day > 0 ? (opts.quotaBonus ?? 0) : 0),
     heat: opts.heat ?? 0,
     blackouts: opts.blackouts ?? blackoutsFor(scales.under),
     pace: opts.pace ?? 1,
+    toolsDay: Math.max(day, opts.toolsDay ?? day),
     flags: { agentBribe: false, plantSpared: false, plantJunk: false, cheatedBriber: false, selfScan: false },
   }
 }

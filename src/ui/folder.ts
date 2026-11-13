@@ -48,6 +48,8 @@ export class Folder extends Container {
   constructor(
     private host: FolderHost,
     private day: number,
+    /** Настоящий номер смены: во «Второй смене» инструменты старше её. */
+    private realDay = day,
   ) {
     super()
     this.tools = TOOLS.filter((t) => TOOL_DAY[t] <= day)
@@ -236,7 +238,7 @@ export class Folder extends Container {
       return
     }
     // В третьем акте сканер можно навести на себя: он работает на всём, что помнит.
-    if (this.day >= 14 && !this.scanning) {
+    if (this.realDay >= 14 && !this.scanning) {
       this.button(SELF_SCAN.button, FOLDER.w - 60, 25, 55, () => {
         this.selfScan = true
         sfx.mismatch()

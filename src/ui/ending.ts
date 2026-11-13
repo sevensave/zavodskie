@@ -27,6 +27,7 @@ export class EndingScene extends Container {
     c: Campaign,
     private gallery: Gallery,
     onAgain: () => void,
+    onModes?: () => void,
   ) {
     super()
     const e = endingById(c.ending!)
@@ -66,12 +67,15 @@ export class EndingScene extends Container {
     const style = { bg: 'teal', fg: 'white', edge: 'cyan' } as const
     const gal = new Button(ENDING_TEXT.gallery, 100, 14, { bg: 'steel', fg: 'white', edge: 'slate' }, () => this.openGallery())
     const again = new Button(ENDING_TEXT.again, 100, 14, style, onAgain)
-    gal.position.set(130, 248)
-    again.position.set(250, 248)
-    gal.visible = again.visible = false
-    this.addChild(gal, again)
+    const modes = new Button('РЕЖИМЫ', 100, 14, { bg: 'steel', fg: 'white', edge: 'slate' }, () => onModes?.())
+    gal.position.set(70, 248)
+    modes.position.set(190, 248)
+    again.position.set(310, 248)
+    gal.visible = again.visible = modes.visible = false
+    this.addChild(gal, modes, again)
 
     void (async () => {
+      sfx.motif()
       await this.tl.wait(700)
       sfx.paper()
       for (const b of blocks) {
@@ -79,6 +83,7 @@ export class EndingScene extends Container {
         await this.tl.wait(250)
       }
       gal.visible = again.visible = true
+      modes.visible = !!onModes
     })()
   }
 
