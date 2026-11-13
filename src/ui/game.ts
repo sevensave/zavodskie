@@ -23,9 +23,11 @@ import { MODES_TEXT, type EndlessMod } from '../content/modes'
 import { applyMeta, emptyMeta, META_VERSION, type Meta, type MetaEvent } from '../sim/meta'
 import { dailyCode, dailyKesh, dailyKey, dailyScore, endlessDay, endlessScore, setupDaily, setupEndless } from '../sim/modes'
 import { Summary } from './summary'
+import { TitleScene } from './title'
 import { Home } from './home'
 import { loadSlot } from './storage'
 import { label, loadFont } from './text'
+import { MENU_TEXT } from '../content/menu'
 
 declare const __DEV__: boolean
 declare const __APP_VERSION__: string
@@ -101,7 +103,14 @@ export async function boot(host: HTMLElement) {
   let scene: Scene | null = null
   let desk: Desk | null = null
   let speed = 1
-  let campaign: Campaign = (await loadCampaign()) ?? newCampaign(`ночь-${Math.floor(Math.random() * 1e9)}`)
+  const savedCampaign = await loadCampaign()
+  /** Есть ли кампания на диске: от этого зависит «Продолжить» в главном меню. */
+  let hasSave = !!savedCampaign
+  let campaign: Campaign = savedCampaign ?? newCampaign(`ночь-${Math.floor(Math.random() * 1e9)}`)
+  const saveCampaign = () => {
+    hasSave = true
+    void saveSlot('campaign', campaign)
+  }
   const loaded = await loadSlot<Gallery>('gallery')
   let gallery: Gallery = loaded && loaded.v === 1 ? loaded : emptyGallery()
   const settings = (await loadSlot<{ muted?: boolean }>('settings')) ?? {}
@@ -148,7 +157,7 @@ export async function boot(host: HTMLElement) {
         plus: () => {
           leaveMenus()
           campaign = newCampaign(`ночь-${Math.floor(Math.random() * 1e9)}`, 1)
-          void saveSlot('campaign', campaign)
+          saveCampaign()
           award({ kind: 'plus' })
           setScene(new Card(MODES_TEXT.plus, ['Обучение вы уже прошли. Ночь вторая.', 'Все инструменты на столе. Квоты выше. Люди — не те, что в прошлый раз.'], 'К СТОЙКЕ', () => route()))
         },
@@ -162,20 +171,19 @@ export async function boot(host: HTMLElement) {
     modesView = view
     app.stage.addChildAt(view, app.stage.children.length - 1)
   }
+  const toggleSound = () => {
+    setMuted(!isMuted())
+    void saveSlot('settings', { muted: isMuted() })
+    return isMuted()
+  }
   const pause = buildPause(
     () => setPaused(false),
     () => {
       setPaused(false)
-      campaign = newCampaign(`ночь-${Math.floor(Math.random() * 1e9)}`)
-      void saveSlot('campaign', campaign)
-      route()
+      showTitle()
     },
-    openModes,
-    () => {
-      setMuted(!isMuted())
-      void saveSlot('settings', { muted: isMuted() })
-      return isMuted()
-    },
+    () => !!desk,
+    toggleSound,
   )
   app.stage.addChildAt(pause, app.stage.children.length - 1)
   app.stage.addChildAt(toaster, app.stage.children.length - 1)
@@ -195,6 +203,25 @@ export async function boot(host: HTMLElement) {
     else setMood({ kind: 'quiet' })
   }
 
+  /** Главное меню: продолжить, новая игра, режимы, настройки. */
+  function showTitle() {
+    mode = 'campaign'
+    setScene(
+      new TitleScene(hasSave ? campaign : null, __APP_VERSION__, {
+        play: () => route(),
+        fresh: () => {
+          campaign = newCampaign(`ночь-${Math.floor(Math.random() * 1e9)}`)
+          saveCampaign()
+          route()
+        },
+        modes: openModes,
+        toggleSound,
+        fullscreen,
+        quit: window.zavod ? () => window.zavod?.quit() : undefined,
+      }),
+    )
+  }
+
   /** Куда идти из сохранения: на смену, домой или к финальной карточке. */
   function route() {
     mode = 'campaign'
@@ -207,7 +234,7 @@ export async function boot(host: HTMLElement) {
       // Концовку в мете считаем один раз, а не при каждой загрузке.
       if (!campaign.flags.metaEnded) {
         campaign = { ...campaign, flags: { ...campaign.flags, metaEnded: true } }
-        void saveSlot('campaign', campaign)
+        saveCampaign()
         award({ kind: 'ending', c: campaign, seen: gallery.seen })
       }
       setScene(
@@ -216,7 +243,7 @@ export async function boot(host: HTMLElement) {
           gallery,
           () => {
             campaign = newCampaign(`ночь-${Math.floor(Math.random() * 1e9)}`)
-            void saveSlot('campaign', campaign)
+            saveCampaign()
             route()
           },
           openModes,
@@ -234,7 +261,7 @@ export async function boot(host: HTMLElement) {
   function goToShift(paid: BillId[]) {
     const { campaign: next, events } = payBills(campaign, paid)
     campaign = next
-    void saveSlot('campaign', campaign)
+    saveCampaign()
     award({ kind: 'home', c: campaign })
     if (campaignOver(campaign)) return route()
     const lines = events.length ? events : ['Ночь прошла тихо. Даже холодильник молчал.']
@@ -258,7 +285,7 @@ export async function boot(host: HTMLElement) {
 
   function finish(s: ShiftState) {
     campaign = closeShift(campaign, s)
-    void saveSlot('campaign', campaign)
+    saveCampaign()
     award({ kind: 'shift', mode: 'campaign', s, c: campaign })
     setScene(new Summary(s, campaign.last!, () => route(), campaign.branch))
   }
@@ -312,7 +339,7 @@ export async function boot(host: HTMLElement) {
   addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (modesView) closeModes()
-      else setPaused(!pause.visible)
+      else if (!(scene instanceof TitleScene)) setPaused(!pause.visible)
       return
     }
     if (pause.visible) return
@@ -372,56 +399,52 @@ export async function boot(host: HTMLElement) {
     tickAmbience(Math.min(100, t.deltaMS))
   })
 
-  route()
+  showTitle()
   void window.zavod?.checkUpdate().then((u) => {
     if (u) console.info(`Вышла версия ${u.version}: ${u.url}`)
   })
   void sfx
 }
 
-function buildPause(resume: () => void, restart: () => void, modes: () => void, toggleSound: () => boolean): Container {
+function fullscreen() {
+  if (window.zavod) window.zavod.toggleFullscreen()
+  else if (document.fullscreenElement) void document.exitFullscreen()
+  else void document.documentElement.requestFullscreen()
+}
+
+function buildPause(resume: () => void, toMenu: () => void, inShift: () => boolean, toggleSound: () => boolean): Container {
   const c = new Container()
   const g = new Graphics()
-  g.rect(0, 0, W, H).fill({ color: col('ink'), alpha: 0.85 })
-  g.rect(170, 70, 140, 150).fill(col('ink'))
-  g.rect(171, 71, 138, 148).fill(col('night'))
   c.addChild(g)
   const t = label('ПЕРЕРЫВ', 'amber', 2)
   t.position.set(240 - t.width / 2, 78)
   c.addChild(t)
   const style = { bg: 'steel', fg: 'white', edge: 'slate' } as const
-  const b1 = new Button('ПРОДОЛЖИТЬ', 110, 14, style, resume)
-  b1.position.set(185, 100)
-  const b2 = new Button('ПОЛНЫЙ ЭКРАН', 110, 14, style, () => {
-    if (window.zavod) window.zavod.toggleFullscreen()
-    else if (document.fullscreenElement) void document.exitFullscreen()
-    else void document.documentElement.requestFullscreen()
-  })
-  b2.position.set(185, 136)
-  // Новая игра стирает кампанию: просим нажать дважды.
+  const b1 = new Button('ПРОДОЛЖИТЬ', 124, 14, style, resume)
+  const b6 = new Button(MENU_TEXT.sound(isMuted()), 124, 14, style, () => b6.setCaption(MENU_TEXT.sound(toggleSound())))
+  const b2 = new Button(MENU_TEXT.fullscreen, 124, 14, style, fullscreen)
+  // Посреди смены выход в меню теряет её: сохранение пишется в конце смены, поэтому просим нажать дважды.
   let armed = false
-  const b3 = new Button('НОВАЯ ИГРА', 110, 14, style, () => {
-    if (!armed) {
+  const b3: Button = new Button(MENU_TEXT.toMenu, 124, 14, style, () => {
+    if (inShift() && !armed) {
       armed = true
-      b3.setCaption('ТОЧНО? ЕЩЁ РАЗ')
+      b3.setCaption(MENU_TEXT.toMenuSure)
       return
     }
     armed = false
-    b3.setCaption('НОВАЯ ИГРА')
-    restart()
+    b3.setCaption(MENU_TEXT.toMenu)
+    toMenu()
   })
-  b3.position.set(185, 172)
-  const b5 = new Button('РЕЖИМЫ', 110, 14, style, modes)
-  b5.position.set(185, 118)
-  const soundCaption = (m: boolean) => (m ? 'ЗВУК: ВЫКЛ' : 'ЗВУК: ВКЛ')
-  const b6 = new Button(soundCaption(isMuted()), 110, 14, style, () => b6.setCaption(soundCaption(toggleSound())))
-  b6.position.set(185, 154)
-  c.addChild(b1, b2, b3, b5, b6)
-  if (window.zavod) {
-    const b4 = new Button('ВЫЙТИ', 110, 14, style, () => window.zavod?.quit())
-    b4.position.set(185, 190)
-    c.addChild(b4)
-  }
+  const list = [b1, b6, b2, b3]
+  if (window.zavod) list.push(new Button(MENU_TEXT.quit, 124, 14, style, () => window.zavod?.quit()))
+  const boxH = 36 + list.length * 18
+  g.rect(0, 0, W, H).fill({ color: col('ink'), alpha: 0.85 })
+  g.rect(165, 70, 150, boxH).fill(col('ink'))
+  g.rect(166, 71, 148, boxH - 2).fill(col('night'))
+  list.forEach((b, i) => {
+    b.position.set(178, 100 + i * 18)
+    c.addChild(b)
+  })
   c.visible = false
   return c
 }
