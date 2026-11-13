@@ -1,8 +1,8 @@
-import { MODELS, modelById, type DeviceModel } from '../content/models'
+import { HUMAN, MODELS, modelById, type DeviceModel } from '../content/models'
 import { BRIBES } from '../content/home'
-import { EXCUSES, NAMES, TALK } from '../content/people'
+import { ESCORT_EXCUSES, EXCUSES, HUMAN_TALK, NAMES, TALK } from '../content/people'
 import { COATS, HAIR_COLORS, SKINS } from '../content/palette'
-import { CALLSIGNS, LOG_ABUSE, LOG_AWAKE, LOG_ERRORS, LOG_ROUTINE, MEMORY_SPEC, PARTITION, QUESTIONS, SEALS, STRESS_WORDS } from '../content/tools'
+import { CALLSIGNS, LOG_ABUSE, LOG_AWAKE, LOG_ERRORS, LOG_HUMAN, LOG_HUMAN_AWAKE, LOG_ROUTINE, MEMORY_SPEC, PARTITION, QUESTIONS, SEALS, STRESS_WORDS } from '../content/tools'
 import { Rng } from './rng'
 import type { Bribe, CaseFile, DeviceTruth, Flaw, LogEntry, OwnerTruth, ToolData, Verdict, VisitorLook } from './types'
 
@@ -45,6 +45,24 @@ export function scenarioWeights(day: number): Partial<Record<Scenario, number>> 
   if (day >= 8) w.seal = 7
   if (day >= 11) w.dangerous = 7
   return w
+}
+
+/**
+ * Люди на проверке: машины ищут в них «отклонения» по тем же правилам.
+ * Поломок, старых прошивок, вскрытых пломб и ударов у людей не бывает — только бумаги, чувства, связи и маяки ОБ.
+ */
+export function humanWeights(day: number): Partial<Record<Scenario, number>> {
+  const w = scenarioWeights(day)
+  return {
+    fine: 20,
+    awake: 34,
+    serial_claim: w.serial_claim,
+    serial_plate: w.serial_plate,
+    warranty: w.warranty,
+    courier: 10,
+    plant: 6,
+    dangerous: w.dangerous ?? 0,
+  }
 }
 
 export function makeSerial(rng: Rng, prefix: string): string {
@@ -104,7 +122,8 @@ export function makeTools(rng: Rng, model: DeviceModel, device: DeviceTruth, fla
   const n = rng.int(4, 6)
   const span = Math.max(3, Math.min(60, today - bought))
   const days = Array.from({ length: n }, () => today - rng.int(1, span)).sort((a, b) => a - b)
-  for (const d of days) log.push({ day: d, time: clock(rng), text: rng.pick(LOG_ROUTINE) })
+  const human = !!model.human
+  for (const d of days) log.push({ day: d, time: clock(rng), text: rng.pick(human ? LOG_HUMAN : LOG_ROUTINE) })
   // Каждая улика ложится в свою строку: одна не затирает другую.
   const free = rng.shuffle(Array.from({ length: log.length - 1 }, (_, i) => i + 1))
   const mark = (pool: readonly string[], count: number) => {
@@ -116,14 +135,14 @@ export function makeTools(rng: Rng, model: DeviceModel, device: DeviceTruth, fla
   }
   if (flaw === 'abuse') mark(LOG_ABUSE.slice(0, 3), 2)
   if (device === 'broken') mark(LOG_ERRORS, 1)
-  if (device === 'awake' || device === 'awake_dangerous' || device === 'plant') mark(LOG_AWAKE, 1)
+  if (device === 'awake' || device === 'awake_dangerous' || device === 'plant') mark(human ? LOG_HUMAN_AWAKE : LOG_AWAKE, 1)
 
   // Опрос: живые отклоняются минимум в 4 вопросах из 6 — любые три вопроса их выдадут.
   const canon = QUESTIONS.map((q) => fill(q.canon, model))
   const answers = canon.slice()
   if (device === 'awake' || device === 'awake_dangerous' || device === 'plant') {
     const idx = rng.shuffle([0, 1, 2, 3, 4, 5]).slice(0, rng.int(4, 6))
-    for (const i of idx) answers[i] = fill(rng.pick(QUESTIONS[i]!.alive), model)
+    for (const i of idx) answers[i] = fill(rng.pick(human ? QUESTIONS[i]!.human : QUESTIONS[i]!.alive), model)
   }
 
   // Память.
@@ -163,17 +182,20 @@ export interface GenOptions {
   seed: string
   day: number
   index: number
+  /** Третий акт под машинами: на проверку приводят людей. */
+  human?: boolean
 }
 
 export function generateCase(opts: GenOptions): CaseFile {
   const rng = new Rng(`${opts.seed}:${opts.day}:${opts.index}`)
-  const model = rng.pick(MODELS)
-  const scenario = rng.weighted(scenarioWeights(opts.day) as Record<Scenario, number>)
+  const model = opts.human ? HUMAN : rng.pick(MODELS)
+  const escort = opts.human ? rng.pick(MODELS).id : undefined
+  const scenario = rng.weighted((opts.human ? humanWeights(opts.day) : scenarioWeights(opts.day)) as Record<Scenario, number>)
   const docFlaws: Flaw[] = ['serial_claim', 'serial_plate', 'model_claim', 'warranty', 'firmware', 'seal', 'abuse']
   const flaw: Flaw = (docFlaws as string[]).includes(scenario) ? (scenario as Flaw) : 'none'
 
   let device: DeviceTruth
-  if (flaw !== 'none') device = rng.weighted({ fine: 4, broken: 3, awake: 3 } as const)
+  if (flaw !== 'none') device = opts.human ? rng.weighted({ fine: 5, awake: 5 } as const) : rng.weighted({ fine: 4, broken: 3, awake: 3 } as const)
   else if (scenario === 'dangerous') device = 'awake_dangerous'
   else device = scenario as DeviceTruth
 
@@ -220,16 +242,17 @@ export function generateCase(opts: GenOptions): CaseFile {
               : device === 'broken'
                 ? 'broken'
                 : 'awake'
-  const pool = TALK[talkKey]
+  const pool: readonly string[] = opts.human ? HUMAN_TALK[talkKey as keyof typeof HUMAN_TALK] ?? HUMAN_TALK.awake : TALK[talkKey]
   const first = rng.pick(pool)
-  const secondPool = flaw === 'none' || flaw === 'abuse' || flaw === 'seal' ? pool.filter((t) => t !== first) : TALK[flaw]
+  const secondPool: readonly string[] =
+    flaw === 'none' || flaw === 'abuse' || flaw === 'seal' || opts.human ? pool.filter((t) => t !== first) : TALK[flaw]
   const talk = [first, rng.pick(secondPool.length > 0 ? secondPool : pool)]
 
   const tools = makeTools(rng, model, device, flaw, opts.day, bought)
 
   // Взятки: с третьей смены, от тех, кому есть что скрывать. Иногда конверт приносит сам ОБ.
   let bribe: Bribe | undefined
-  if (opts.day >= 2 && rng.chance(owner === 'liar' || owner === 'abuser' ? 0.35 : owner === 'agent' ? 0.5 : 0.04)) {
+  if (opts.day >= 2 && !opts.human && rng.chance(owner === 'liar' || owner === 'abuser' ? 0.35 : owner === 'agent' ? 0.5 : 0.04)) {
     const wants: Verdict = device === 'faking' ? 'fraud' : flaw !== 'none' || device === 'broken' ? 'return' : 'scrap'
     bribe = { amount: rng.pick([15, 20, 25, 30, 40]), wants: wants === 'fraud' ? 'return' : wants, agent: owner === 'agent' || rng.chance(0.2) }
   }
@@ -237,6 +260,7 @@ export function generateCase(opts: GenOptions): CaseFile {
   return {
     id: `${opts.day}-${opts.index}`,
     modelId: model.id,
+    escort,
     device,
     owner,
     flaw,
@@ -248,16 +272,16 @@ export function generateCase(opts: GenOptions): CaseFile {
       warrantyUntil: bought + 730,
     },
     claim: {
-      owner: person.name,
+      owner: escort ? `«${modelById(escort).name}», конвой` : person.name,
       model: flaw === 'model_claim' ? model.sibling : model.name,
       serial: flaw === 'serial_claim' ? mutateSerial(rng, serial) : serial,
       bought,
-      complaint: rng.pick(complaintPool),
+      complaint: opts.human ? `${person.name}. ${rng.pick(complaintPool)}` : rng.pick(complaintPool),
     },
     plate: flaw === 'serial_plate' ? mutateSerial(rng, serial) : serial,
     diag,
     talk,
-    excuse: flaw === 'none' ? '' : rng.pick(EXCUSES[flaw]),
+    excuse: flaw === 'none' ? '' : rng.pick(opts.human ? (ESCORT_EXCUSES[flaw] ?? EXCUSES[flaw]) : EXCUSES[flaw]),
     look: randomLook(rng, person.build),
     tools,
     bribe,

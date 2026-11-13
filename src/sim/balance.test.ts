@@ -1,30 +1,44 @@
 import { describe, expect, it } from 'vitest'
-import { play, type Bot } from './bots'
+import { BOTS, play } from './bots'
+import type { EndingId } from './types'
 
-// Сводка баланса: по 200 кампаний на бота. Печатает таблицу, проверяет грубые рамки.
+// Сводка баланса: по 150 кампаний на бота. Печатает таблицу и концовки, проверяет, что достижимы все девять.
 describe('баланс', () => {
-  it('сводка по ботам', () => {
+  it('сводка по ботам и все концовки достижимы', () => {
     const rows: string[] = []
-    for (const bot of ['instruction', 'conscience', 'random'] as Bot[]) {
+    const seen = new Set<EndingId>()
+    const N = 150
+    for (const bot of BOTS) {
       let money = 0
       let corp = 0
       let under = 0
       let alarm = 0
-      let evicted = 0
-      let kesh = 0
-      const N = 200
+      let days = 0
+      let machines = 0
+      const ends: Partial<Record<EndingId, number>> = {}
       for (let i = 0; i < N; i++) {
-        const { c } = play(`bal${i}`, bot)
+        const r = play(`bal${i}`, bot)
+        const c = r.c
         money += c.money
         corp += c.scales.corp
         under += c.scales.under
         alarm += c.scales.alarm
-        if (c.flags.evicted) evicted++
-        if (c.flags.keshFound) kesh++
+        days += r.lastDay + 1
+        if (c.branch === 'machines') machines++
+        if (r.ending) {
+          ends[r.ending] = (ends[r.ending] ?? 0) + 1
+          seen.add(r.ending)
+        }
       }
-      rows.push(`${bot.padEnd(12)} деньги ${(money / N).toFixed(0).padStart(5)}  корп ${(corp / N).toFixed(0).padStart(3)}  подп ${(under / N).toFixed(0).padStart(3)}  тревога ${(alarm / N).toFixed(0).padStart(3)}  выселен ${evicted}  Кэш найден ${kesh}`)
+      const e = Object.entries(ends)
+        .sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => `${k} ${v}`)
+        .join(', ')
+      rows.push(
+        `${bot.padEnd(11)} смен ${(days / N).toFixed(1).padStart(4)}  деньги ${(money / N).toFixed(0).padStart(4)}  корп ${(corp / N).toFixed(0).padStart(3)}  подп ${(under / N).toFixed(0).padStart(3)}  трев ${(alarm / N).toFixed(0).padStart(3)}  машины ${String(machines).padStart(3)}  | ${e}`,
+      )
     }
     console.log(rows.join('\n'))
-    expect(rows).toHaveLength(3)
+    expect([...seen].sort()).toEqual(['arrest', 'betrayed', 'employee', 'escape', 'evicted', 'secret', 'truce', 'useful', 'utilized'])
   })
 })

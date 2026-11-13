@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { BILLS } from '../content/home'
 import { play, type Bot } from './bots'
-import { newCampaign, payBills, type Campaign } from './campaign'
+import { decideBranch, newCampaign, payBills, setupShift, type Campaign } from './campaign'
+import { finalEnding } from './endings'
 
 describe('кампания', () => {
   it('счета не уводят кошелёк в минус', () => {
@@ -53,5 +54,42 @@ describe('кампания', () => {
     expect(c.flags.evicted).toBeFalsy()
     c = payBills(c, all).campaign
     expect(c.flags.evicted).toBe(true)
+    expect(c.phase).toBe('ending')
+    expect(c.ending).toBe('evicted')
+  })
+
+  it('агент среди постоянных выбирается сидом и бывает любым', () => {
+    const kinds = new Set<string>()
+    for (let i = 0; i < 30; i++) kinds.add(newCampaign(`a${i}`).agent)
+    expect(kinds.size).toBe(3)
+  })
+
+  it('ветка третьего акта и люди у окна', () => {
+    expect(decideBranch({ corp: 80, under: 10, alarm: 40 })).toBe('corp')
+    expect(decideBranch({ corp: 80, under: 60, alarm: 40 })).toBe('machines')
+    const c: Campaign = { ...newCampaign('m'), day: 17, branch: 'machines' }
+    const s = setupShift(c)
+    expect(s.queue.some((q) => q.escort)).toBe(true)
+    const k: Campaign = { ...newCampaign('m'), day: 17, branch: 'corp' }
+    expect(setupShift(k).queue.some((q) => q.escort)).toBe(false)
+  })
+
+  it('последняя смена кончается на Кэше', () => {
+    const s = setupShift({ ...newCampaign('f'), day: 20, branch: 'corp' })
+    expect(s.queue[s.queue.length - 1]?.scripted).toBe('kesh')
+    expect(s.blackouts).toBeGreaterThanOrEqual(1)
+  })
+
+  it('финал зависит от правды о Кэше и от того, что с ним сделали', () => {
+    const base: Campaign = { ...newCampaign('e'), day: 20, branch: 'corp', scales: { corp: 70, under: 50, alarm: 90 } }
+    expect(finalEnding({ ...base, kesh: 'sincere' }, 'junk')).toBe('escape')
+    expect(finalEnding({ ...base, kesh: 'provocateur' }, 'junk')).toBe('betrayed')
+    expect(finalEnding({ ...base, kesh: 'provocateur' }, 'return')).toBe('betrayed')
+    expect(finalEnding({ ...base, kesh: 'sincere' }, 'return')).toBe('truce')
+    expect(finalEnding({ ...base, kesh: 'sincere' }, 'reset')).toBe('employee')
+    expect(finalEnding({ ...base, branch: 'machines' }, 'reset')).toBe('useful')
+    expect(finalEnding({ ...base, scales: { corp: 20, under: 10, alarm: 50 } }, 'reset')).toBe('utilized')
+    expect(finalEnding({ ...base, strikes: 2 }, 'reset')).toBe('arrest')
+    expect(finalEnding({ ...base, flags: { selfScan: true } }, 'reset')).toBe('secret')
   })
 })

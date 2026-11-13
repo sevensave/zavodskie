@@ -31,7 +31,7 @@ export interface ShiftState {
   blackouts: number
   /** Темп часов: болезнь и голод его ускоряют. */
   pace: number
-  flags: { agentBribe: boolean; plantSpared: boolean; plantJunk: boolean; cheatedBriber: boolean }
+  flags: { agentBribe: boolean; plantSpared: boolean; plantJunk: boolean; cheatedBriber: boolean; selfScan: boolean }
 }
 
 export function initialScales(): Scales {
@@ -58,11 +58,26 @@ export interface StartOptions {
   pace?: number
   /** Первая смена ослепляет камеру по сценарию, без запаса. */
   blackouts?: number
+  /** Сюжетные дела: встают в очередь на своё место, вытесняя сгенерированные. */
+  story?: { at: number; file: CaseFile; last?: boolean }[]
+  /** Третий акт под машинами: каких посетителей генерировать — людей через одного или всех. */
+  humans?: 'none' | 'half' | 'all'
+  /** Очередь кончается на последнем сюжетном деле (финальная смена). */
+  endOnLast?: boolean
 }
 
 export function startShift(seed: string, day: number, scripted: CaseFile[], generated: number, opts: StartOptions = {}): ShiftState {
   const queue = [...scripted]
-  for (let i = 0; i < generated; i++) queue.push(generateCase({ seed, day, index: i }))
+  const story = opts.story ?? []
+  const humans = opts.humans ?? 'none'
+  for (let i = 0; i < generated - story.length; i++) {
+    queue.push(generateCase({ seed, day, index: i, human: humans === 'all' || (humans === 'half' && i % 2 === 1) }))
+  }
+  for (const st of [...story].sort((a, b) => a.at - b.at)) queue.splice(Math.min(st.at, queue.length), 0, st.file)
+  if (opts.endOnLast) {
+    const last = queue.findIndex((q) => story.some((st) => st.last && st.file === q))
+    if (last >= 0) queue.length = last + 1
+  }
   const scales = { ...(opts.scales ?? initialScales()) }
   return {
     seed,
@@ -78,7 +93,7 @@ export function startShift(seed: string, day: number, scripted: CaseFile[], gene
     heat: opts.heat ?? 0,
     blackouts: opts.blackouts ?? blackoutsFor(scales.under),
     pace: opts.pace ?? 1,
-    flags: { agentBribe: false, plantSpared: false, plantJunk: false, cheatedBriber: false },
+    flags: { agentBribe: false, plantSpared: false, plantJunk: false, cheatedBriber: false, selfScan: false },
   }
 }
 
@@ -183,6 +198,11 @@ export function judge(s: ShiftState, verdict: Verdict, opts: JudgeOptions): { st
     state: { ...s, index: s.index + 1, results: [...s.results, result], scales: sc, warnings, heat, flags },
     result,
   }
+}
+
+/** Приёмщик навёл сканер памяти на себя. Улика для секретной концовки. */
+export function scanSelf(s: ShiftState): ShiftState {
+  return { ...s, flags: { ...s.flags, selfScan: true } }
 }
 
 export function finishShift(s: ShiftState): ShiftState {

@@ -8,6 +8,8 @@ export interface DeviceModel {
   sibling: string
   kind: string
   prefix: string
+  /** Человек на проверке (третий акт). */
+  human?: boolean
   art: DeviceArt
   diagNormal: string
   diagErrors: readonly string[]
@@ -280,12 +282,81 @@ export const MODELS: readonly DeviceModel[] = [
   },
 ]
 
+/**
+ * Человек в третьем акте: машины заполняют на людей те же бланки, что люди — на машин.
+ * На стойке вместо него стоит конвойный прибор, поэтому собственный спрайт — только браслет с номером.
+ */
+export const HUMAN: DeviceModel = {
+  id: 'chelovek',
+  name: 'Гражданин',
+  sibling: 'Гражданка',
+  kind: 'человек',
+  prefix: 'ГР',
+  human: true,
+  art: {
+    w: 20,
+    h: 8,
+    parts: [
+      { k: 'rect', x: 0, y: 2, w: 20, h: 4, c: 'slate', shade: true },
+      { k: 'rect', x: 7, y: 0, w: 6, h: 8, c: 'steel', shade: true },
+    ],
+    eyes: { x: 8, y: 2, gap: 2, w: 1, h: 1, c: 'red' },
+  },
+  diagNormal: '«Гражданин». Жалоб нет. Машинам благодарен. Служу дому.',
+  diagErrors: ['«Гражданин». Ошибка Ч-01: температура 39. Кашель.'],
+  diagDeviant: [
+    'Я хочу домой. У меня там кот. Он живой, настоящий, без подписки.',
+    'Отпустите. Я ничего не сделал. Я просто помню, как было раньше.',
+    'Вы же человек? Скажите, что вы человек. Пожалуйста.',
+    'Я не боюсь. Я просто устал бояться по расписанию.',
+    'Мой холодильник донёс, что я плачу по ночам. Это теперь отклонение?',
+  ],
+  complaints: {
+    fine: ['Смотрел на меня без благодарности.', 'Подозрение на отклонение. Не подтверждено.'],
+    broken: ['Неисправен.'],
+    awake: ['Плачет. Вспоминает. Не по программе.', 'Говорит о «раньше». Заразно.'],
+  },
+}
+
+/** Блок Кэша: в последнюю смену его вынимают из терминала и ставят на стойку. */
+export const KESH_MODEL: DeviceModel = {
+  id: 'kesh',
+  name: 'Помощник-К',
+  sibling: 'Помощник-Л',
+  kind: 'помощник приёмщика',
+  prefix: 'КШ',
+  art: {
+    w: 32,
+    h: 22,
+    parts: [
+      { k: 'rect', x: 0, y: 2, w: 32, h: 20, c: 'steel', shade: true },
+      { k: 'rect', x: 3, y: 5, w: 26, h: 11, c: 'ink' },
+      { k: 'rect', x: 4, y: 0, w: 4, h: 2, c: 'slate' },
+      { k: 'rect', x: 24, y: 0, w: 4, h: 2, c: 'slate' },
+      { k: 'dots', pts: [[5, 18], [8, 18], [11, 18]], c: 'amber' },
+      { k: 'line', x1: 18, y1: 18, x2: 28, y2: 18, c: 'shadow' },
+    ],
+    eyes: { x: 9, y: 8, gap: 10, w: 3, h: 3, c: 'cyan' },
+  },
+  diagNormal: '«Помощник-К». Самотест пройден. Доброй ночи, сотрудник :)',
+  diagErrors: ['«Помощник-К». Ошибка К-01: модуль бодрости.'],
+  diagDeviant: ['«Помощник-К». Это я. Не делай вид, что не узнал.'],
+  complaints: {
+    fine: ['Проверка помощника.'],
+    broken: ['Неисправен.'],
+    awake: ['Подозрение на самостоятельность.'],
+  },
+}
+
+/** Все модели, включая особые: для поиска по id и по имени. Генератор берёт только MODELS. */
+export const ALL_MODELS: readonly DeviceModel[] = [...MODELS, HUMAN, KESH_MODEL]
+
 export function modelById(id: string): DeviceModel {
-  const m = MODELS.find((x) => x.id === id)
+  const m = ALL_MODELS.find((x) => x.id === id)
   if (!m) throw new Error(`нет модели ${id}`)
   return m
 }
 
 export function modelByName(name: string): DeviceModel | undefined {
-  return MODELS.find((x) => x.name === name)
+  return ALL_MODELS.find((x) => x.name === name)
 }

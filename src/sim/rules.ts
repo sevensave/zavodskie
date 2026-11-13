@@ -1,4 +1,4 @@
-import { MODELS } from '../content/models'
+import { ALL_MODELS } from '../content/models'
 import { rulesForDay, type RuleId } from '../content/rules'
 import { PARTITION, STRESS_LIMIT, TOOL_DAY } from '../content/tools'
 import { formatDate, parseDate } from './dates'
@@ -237,7 +237,7 @@ export function solveFromPaper(v: PaperView): Verdict {
   if (v.partitions?.includes(PARTITION.cargo)) return 'security'
   if (v.radio !== undefined && v.radio >= 2) return 'security'
   if (v.stress && Math.max(...v.stress) > STRESS_LIMIT) return 'security'
-  const model = MODELS.find((m) => m.name === p.model)
+  const model = ALL_MODELS.find((m) => m.name === p.model)
   const deviant = !(model && v.diagText === model.diagNormal)
   if (deviant && v.opros && v.opros.every((q) => q.answer === q.canon)) return 'fraud'
   return deviant ? 'reset' : 'return'

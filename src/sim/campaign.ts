@@ -1,15 +1,25 @@
 import { CLIFF_POOL, CLIFFHANGERS, type Cliffhanger } from '../content/cash'
+import { storyCliff, storyNews } from '../content/chronicle'
 import { BILLS, billMarkup, type BillId } from '../content/home'
 import { NEWS, type NewsCondition, type NewsItem } from '../content/news'
+import { CORP_FLOOR, earlyEnding, finalEnding } from './endings'
 import { Rng } from './rng'
 import { shift1Scripted } from './scripted'
 import { blackoutsFor, casesForDay, startShift, summarize, type ShiftState, type ShiftSummary } from './shift'
-import type { Scales, Verdict } from './types'
+import { storyFor } from './story'
+import type { Branch, EndingId, KeshTruth, RegularId, Scales, StoryCtx, Verdict } from './types'
 
 export const CAMPAIGN_DAYS = 21
-export const SAVE_VERSION = 2
+/** 3: сюжет, ветка третьего акта, агент среди постоянных, концовки. */
+export const SAVE_VERSION = 3
+/** Последняя смена (с нуля): на ней к окну приносят Кэша. */
+export const FINAL_DAY = CAMPAIGN_DAYS - 1
+/** После этой смены решается, чья будет стойка в третьем акте. */
+export const BRANCH_DAY = 13
+/** С этой смены под машинами к окну приводят людей. */
+export const HUMANS_DAY = 16
 
-export type KeshTruth = 'sincere' | 'provocateur' | 'manipulator'
+export type { KeshTruth } from './types'
 
 export interface DayRecord {
   day: number
@@ -31,12 +41,21 @@ export interface Campaign {
   seed: string
   /** Номер ближайшей (или идущей) смены, 0 — первая. */
   day: number
-  phase: 'shift' | 'home'
+  phase: 'shift' | 'home' | 'ending'
   money: number
   scales: Omit<Scales, 'money'>
   heat: number
   /** Скрытая правда забега: кто такой Кэш. Узнаётся по уликам в третьем акте. */
   kesh: KeshTruth
+  /** Скрытая правда забега: кто из постоянных посетителей — агент ОБ. */
+  agent: RegularId
+  /** Чья стойка в третьем акте; решается после 14-й смены. */
+  branch: Branch | null
+  /** Штампы сюжетных дел по ключу. */
+  story: Record<string, Verdict>
+  /** Сколько раз приёмщик попался ОБ. Три — арест. */
+  strikes: number
+  ending?: EndingId
   /** Сколько вечеров подряд не плачено по каждому счёту. */
   unpaid: Record<BillId, number>
   history: DayRecord[]
@@ -67,6 +86,10 @@ export function newCampaign(seed: string): Campaign {
     scales: { corp: 50, under: 0, alarm: 10 },
     heat: 0,
     kesh: rng.pick(['sincere', 'provocateur', 'manipulator'] as const),
+    agent: new Rng(`${seed}:agent`).pick(['somov', 'lykova', 'kovalchuk'] as const),
+    branch: null,
+    story: {},
+    strikes: 0,
     unpaid: { door: 0, heat: 0, food: 0, link: 0, kesh: 0 },
     history: [],
     flags: {},
@@ -81,14 +104,34 @@ export function paceFor(c: Campaign): number {
   return p
 }
 
+export function storyCtx(c: Campaign): StoryCtx {
+  return { kesh: c.kesh, agent: c.agent, branch: c.branch, verdicts: c.story, flags: c.flags }
+}
+
+/** Кого ведут к окну: под машинами в конце третьего акта — людей. */
+export function humansFor(c: Campaign): 'none' | 'half' | 'all' {
+  if (c.branch !== 'machines' || c.day < HUMANS_DAY) return 'none'
+  return c.day === HUMANS_DAY ? 'half' : 'all'
+}
+
 export function setupShift(c: Campaign): ShiftState {
   const scripted = c.day === 0 ? shift1Scripted() : []
+  const final = c.day === FINAL_DAY
   return startShift(`${c.seed}:${c.day}`, c.day, scripted, casesForDay(c.day), {
     scales: { money: 0, ...c.scales },
     heat: c.heat,
     pace: paceFor(c),
-    blackouts: c.day === 0 ? 0 : blackoutsFor(c.scales.under),
+    // В последнюю ночь Кэш слепит камеру сам, сколько бы ему ни доверяли.
+    blackouts: c.day === 0 ? 0 : blackoutsFor(c.scales.under) + (final ? 1 : 0),
+    story: c.day === 0 ? [] : storyFor(c.day, storyCtx(c)),
+    humans: humansFor(c),
+    endOnLast: final,
   })
+}
+
+/** Ветка третьего акта: если подполье сильно или город на грани — стойку займут машины. */
+export function decideBranch(sc: Omit<Scales, 'money'>): Branch {
+  return sc.under >= 50 || sc.alarm >= 70 ? 'machines' : 'corp'
 }
 
 const QUOTA_BONUS = 15
@@ -125,7 +168,9 @@ function newsConditions(s: ShiftState, sum: ShiftSummary, quotaMet: boolean): Ne
   return out
 }
 
-function pickCliff(s: ShiftState, sum: ShiftSummary, quotaMet: boolean, aud: Audit, rng: Rng): Cliffhanger {
+function pickCliff(s: ShiftState, sum: ShiftSummary, quotaMet: boolean, aud: Audit, rng: Rng, x: StoryCtx): Cliffhanger {
+  const story = s.day === 0 ? null : storyCliff(s.day, x)
+  if (story) return story
   if (s.day === 0) {
     const metla = s.results.find((r) => r.caseId === '0-metla')
     if (metla?.verdict === 'junk') return CLIFFHANGERS.junk
@@ -143,7 +188,19 @@ function pickCliff(s: ShiftState, sum: ShiftSummary, quotaMet: boolean, aud: Aud
   return rng.pick(CLIFF_POOL.filter((x) => x.when === want))
 }
 
-/** Закрыть смену: деньги, квота, ревизия, газета на утро. */
+/** Заранее о концовке: вместо обычного клиффхэнгера. */
+const ENDING_CLIFFS: Partial<Record<EndingId, Cliffhanger>> = {
+  utilized: { kind: 'phone', title: 'ЗВОНОК В 06:02', lines: ['— Отдел кадров. Завтра можете не приходить.', '— И послезавтра.', '— Пропуск оставьте на стойке. Он вас больше не узнает.'] },
+  arrest: { kind: 'phone', title: 'ЗВОНОК В 06:04', lines: ['— Майор Гречко. Не вешайте трубку.', '— Не уходите со смены.', '— Мы уже поднимаемся.'] },
+}
+
+const FINAL_CLIFF: Cliffhanger = {
+  kind: 'note',
+  title: '06:00 · ПОСЛЕДНЯЯ СМЕНА',
+  lines: ['Очередь кончилась.', 'Часы над окном остановились на шести.', 'Дальше — без бланков.'],
+}
+
+/** Закрыть смену: деньги, квота, ревизия, газета на утро, сюжет и концовки. */
 export function closeShift(c: Campaign, s: ShiftState): Campaign {
   const rng = new Rng(`${c.seed}:${c.day}:close`)
   const sum = summarize(s)
@@ -154,34 +211,50 @@ export function closeShift(c: Campaign, s: ShiftState): Campaign {
   const conds = newsConditions(s, sum, quotaMet)
   const first = conds[0]!
   const second = conds.find((x) => x !== first) ?? 'calm'
-  const news = [rng.pick(NEWS.filter((n) => n.when === first)), rng.pick(NEWS.filter((n) => n.when === second))]
-  const report: ShiftReport = {
-    day: s.day,
-    summary: sum,
-    quotaMet,
-    quotaDelta,
-    audit: aud,
-    income,
-    news,
-    cliff: pickCliff(s, sum, quotaMet, aud, rng),
-  }
   const verdicts: Partial<Record<Verdict, number>> = {}
   for (const r of s.results) verdicts[r.verdict] = (verdicts[r.verdict] ?? 0) + 1
+  const story = { ...c.story }
+  for (const r of s.results) {
+    const k = s.queue.find((q) => q.id === r.caseId)?.scripted
+    if (k) story[k] = r.verdict
+  }
   const clamp = (v: number) => Math.max(0, Math.min(100, v))
-  return {
+  const scales = {
+    corp: clamp(s.scales.corp + (quotaMet ? 3 : s.quota ? -8 : 0) + aud.corp),
+    under: s.scales.under,
+    alarm: clamp(s.scales.alarm + (c.day >= 14 ? 3 : c.day >= 7 ? 1 : 0)),
+  }
+  // Попался ОБ: меченый конверт, пожалел маяк, отдал маяк подполью.
+  const strikes = c.strikes + (s.flags.agentBribe ? 1 : 0) + (s.flags.plantSpared ? 1 : 0) + (s.flags.plantJunk ? 1 : 0)
+  const flags = { ...c.flags }
+  if (s.flags.plantJunk) flags.cellBurned = true
+  if (s.flags.selfScan) flags.selfScan = true
+  // Доверие ниже черты: первый раз — предупреждение, второй подряд — увольнение.
+  if (c.day > 0 && scales.corp < CORP_FLOOR) {
+    if (flags.corpWarned) flags.fired = true
+    flags.corpWarned = true
+  } else flags.corpWarned = false
+  const branch = c.branch ?? (c.day === BRANCH_DAY ? decideBranch(scales) : null)
+
+  const next: Campaign = {
     ...c,
     phase: 'home',
     money: c.money + income,
-    scales: {
-      corp: clamp(s.scales.corp + (quotaMet ? 3 : s.quota ? -8 : 0) + aud.corp),
-      under: s.scales.under,
-      alarm: clamp(s.scales.alarm + (c.day >= 14 ? 3 : c.day >= 7 ? 1 : 0)),
-    },
+    scales,
     heat: Math.max(0, s.heat - 10 + (aud.happened ? -15 : 0)),
     history: [...c.history, { day: s.day, summary: sum, quotaMet, audit: aud, verdicts }],
-    last: report,
-    flags: { ...c.flags, ...(s.flags.plantJunk ? { cellBurned: true } : {}) },
+    flags,
+    story,
+    strikes,
+    branch,
   }
+  const ending = earlyEnding(next) ?? (c.day >= FINAL_DAY ? finalEnding(next, story.kesh) : null)
+  const x = storyCtx(next)
+  const headline = storyNews(s.day, x)
+  const news = [headline ?? rng.pick(NEWS.filter((n) => n.when === first)), rng.pick(NEWS.filter((n) => n.when === (headline ? first : second)))]
+  const cliff = c.day >= FINAL_DAY ? FINAL_CLIFF : (ending && ENDING_CLIFFS[ending]) || pickCliff(s, sum, quotaMet, aud, rng, x)
+  const report: ShiftReport = { day: s.day, summary: sum, quotaMet, quotaDelta, audit: aud, income, news, cliff }
+  return { ...next, last: report, ...(ending ? { phase: 'ending' as const, ending } : {}) }
 }
 
 export interface BillLine {
@@ -203,6 +276,7 @@ export function payBills(c: Campaign, paid: readonly BillId[]): { campaign: Camp
   const unpaid = { ...c.unpaid }
   const events: string[] = []
   const flags = { ...c.flags }
+  let strikes = c.strikes
   for (const b of lines) {
     const bill = BILLS.find((x) => x.id === b.id)!
     if (paid.includes(b.id) && money >= b.price) {
@@ -212,13 +286,18 @@ export function payBills(c: Campaign, paid: readonly BillId[]): { campaign: Camp
       unpaid[b.id] += 1
       events.push(unpaid[b.id] >= 2 ? bill.unpaidTwice : bill.unpaid)
       if (unpaid[b.id] >= 2 && b.id === 'door') flags.evicted = true
-      if (unpaid[b.id] >= 2 && b.id === 'kesh') flags.keshFound = true
+      if (unpaid[b.id] >= 2 && b.id === 'kesh' && !flags.keshFound) {
+        flags.keshFound = true
+        strikes += 1
+      }
     }
   }
-  return { campaign: { ...c, money, unpaid, flags, day: c.day + 1, phase: 'shift' }, events }
+  const next: Campaign = { ...c, money, unpaid, flags, strikes, day: c.day + 1, phase: 'shift' }
+  const ending = earlyEnding(next)
+  return { campaign: ending ? { ...next, phase: 'ending', ending } : next, events }
 }
 
-/** Кампания кончилась: 21 смена позади или жизнь вынесла приговор раньше. Концовки — этап 4. */
+/** Кампания кончилась: концовка наступила (после 21-й смены или раньше). */
 export function campaignOver(c: Campaign): boolean {
-  return c.day >= CAMPAIGN_DAYS
+  return c.phase === 'ending' || c.day >= CAMPAIGN_DAYS
 }

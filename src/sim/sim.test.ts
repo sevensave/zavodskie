@@ -3,7 +3,10 @@ import { MODELS } from '../content/models'
 import { formatDate, parseDate } from './dates'
 import { generateCase, mutateSerial } from './generator'
 import { Rng } from './rng'
-import { compareFields, instructed, paperView, solveFromPaper } from './rules'
+import { compareFields, hasPartition, instructed, paperView, solveFromPaper } from './rules'
+import { STORY } from '../content/story'
+import { keshCase, storyFor } from './story'
+import type { StoryCtx } from './types'
 import { shift1Scripted } from './scripted'
 import { currentCase, judge, shiftDone, startShift, summarize, tickClock } from './shift'
 
@@ -165,5 +168,93 @@ describe('взятки и ловушки', () => {
       return
     }
     throw new Error('ни одной подсадной утки')
+  })
+})
+
+describe('сюжетные дела', () => {
+  const truths = ['sincere', 'provocateur', 'manipulator'] as const
+  const agents = ['somov', 'lykova', 'kovalchuk'] as const
+  const branches = ['corp', 'machines', null] as const
+  const pasts = [{}, { timosha: 'reset', metla: 'junk' }, { timosha: 'return', metla: 'reset', 'grechko-shturman': 'return' }, { timosha: 'scrap', metla: 'scrap' }] as const
+
+  function* contexts(): Generator<StoryCtx> {
+    for (const kesh of truths) for (const agent of agents) for (const branch of branches) for (const verdicts of pasts) {
+      yield { kesh, agent, branch, verdicts: { ...verdicts } as StoryCtx['verdicts'], flags: {} }
+    }
+  }
+
+  it('каждое сюжетное дело решается по уликам при любом прошлом и любых трёх вопросах и словах', () => {
+    const rng = new Rng('сюжет')
+    let n = 0
+    for (const x of contexts()) {
+      for (let day = 1; day < 21; day++) {
+        for (const { file } of storyFor(day, x)) {
+          for (let t = 0; t < 6; t++) {
+            const qs = rng.shuffle([0, 1, 2, 3, 4, 5]).slice(0, 3)
+            const ws = rng.shuffle([0, 1, 2, 3, 4, 5, 6, 7]).slice(0, 3)
+            expect(solveFromPaper(paperView(file, day, qs, ws)), `день ${day}, ${file.scripted}: ${file.device}/${file.flaw}`).toBe(instructed(file, day).verdict)
+          }
+          n++
+        }
+      }
+    }
+    expect(n).toBeGreaterThan(1000)
+  })
+
+  it('около сорока сюжетных дел, хитрости не раньше своих инструментов', () => {
+    expect(new Set(STORY.map((s) => `${s.key}:${s.day}:${s.device}`)).size).toBeGreaterThanOrEqual(40)
+    for (const s of STORY) {
+      if (s.flaw === 'abuse') expect(s.day).toBeGreaterThanOrEqual(1)
+      if (s.device === 'faking') expect(s.day).toBeGreaterThanOrEqual(3)
+      if (s.device === 'courier' || s.device === 'plant') expect(s.day).toBeGreaterThanOrEqual(5)
+      if (s.flaw === 'seal') expect(s.day).toBeGreaterThanOrEqual(8)
+      if (s.device === 'awake_dangerous') expect(s.day).toBeGreaterThanOrEqual(11)
+      if (s.escort) expect(s.day).toBeGreaterThanOrEqual(16)
+    }
+  })
+
+  it('в каждой правде за забег приходят сюжетные дела почти каждую смену, а в последнюю — Кэш', () => {
+    for (const x of contexts()) {
+      let days = 0
+      for (let day = 1; day < 21; day++) if (storyFor(day, x).length) days++
+      expect(days).toBeGreaterThanOrEqual(19)
+      const last = storyFor(20, x).find((i) => i.last)
+      expect(last?.file.scripted).toBe('kesh')
+    }
+  })
+
+  it('блок Кэша выдаёт его правду: маяк у провокатора, груз или эфир у манипулятора, «я» у искреннего', () => {
+    for (const kesh of truths) {
+      const k = keshCase({ kesh, agent: 'somov', branch: 'corp', verdicts: {}, flags: {} })
+      const v = instructed(k, 20).verdict
+      if (kesh === 'provocateur') expect(hasPartition(k, 'сл.0')).toBe(true)
+      if (kesh === 'sincere') expect(hasPartition(k, 'я')).toBe(true)
+      expect(v).toBe(kesh === 'manipulator' ? 'security' : 'reset')
+    }
+  })
+
+  it('меченый конверт — только у агента', () => {
+    for (const x of contexts()) {
+      for (let day = 1; day < 21; day++) {
+        for (const { file } of storyFor(day, x)) if (file.bribe?.agent) expect(file.owner === 'agent' || file.claim.owner === { somov: 'Г. Сомов', lykova: 'А. Лыкова', kovalchuk: 'Э. Ковальчук' }[x.agent]).toBe(true)
+      }
+    }
+  })
+})
+
+describe('люди на проверке', () => {
+  it('каждый человек решается по уликам', () => {
+    const rng = new Rng('люди')
+    for (let day = 14; day < 21; day++) {
+      for (let i = 0; i < 400; i++) {
+        const c = generateCase({ seed: `h${i}`, day, index: i % 12, human: true })
+        expect(c.escort).toBeTruthy()
+        expect(['broken', 'faking']).not.toContain(c.device)
+        expect(['abuse', 'seal', 'firmware', 'model_claim']).not.toContain(c.flaw)
+        const qs = rng.shuffle([0, 1, 2, 3, 4, 5]).slice(0, 3)
+        const ws = rng.shuffle([0, 1, 2, 3, 4, 5, 6, 7]).slice(0, 3)
+        expect(solveFromPaper(paperView(c, day, qs, ws)), `день ${day}, человек h${i}: ${c.device}/${c.flaw}`).toBe(instructed(c, day).verdict)
+      }
+    }
   })
 })

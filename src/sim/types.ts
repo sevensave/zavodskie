@@ -85,6 +85,10 @@ export interface CaseFile {
   modelId: string
   /** Если дело написано руками — его ключ в контенте. */
   scripted?: string
+  /** Третий акт: на проверку привели человека, а на стойке — конвойный прибор этой модели. */
+  escort?: string
+  /** Сюжетное дело: что скажет Кэш при появлении посетителя и после штампа. */
+  lines?: { arrive?: string; react?: Partial<Record<'spared' | 'reset' | 'security' | 'junk' | 'other', string>> }
   device: DeviceTruth
   owner: OwnerTruth
   flaw: Flaw
@@ -125,4 +129,34 @@ export interface CaseResult {
   warning: boolean
   device: DeviceTruth
   bribe?: { amount: number; honored: boolean; agent: boolean }
+}
+
+/** Скрытая правда забега: кто такой Кэш. */
+export type KeshTruth = 'sincere' | 'provocateur' | 'manipulator'
+
+/** Постоянные посетители, один из которых — агент ОБ (случайно на забег). */
+export type RegularId = 'somov' | 'lykova' | 'kovalchuk'
+
+/** Ветка третьего акта: стойка остаётся за корпорацией или переходит машинам. */
+export type Branch = 'corp' | 'machines'
+
+export type EndingId =
+  | 'employee' // сотрудник месяца
+  | 'useful' // полезный человек при машинах
+  | 'utilized' // утилизирован
+  | 'truce' // перемирие
+  | 'escape' // побег с Кэшем
+  | 'arrest' // арест
+  | 'evicted' // выселен собственной квартирой
+  | 'betrayed' // предан Кэшем
+  | 'secret' // сканер, направленный на себя
+
+/** Что сюжет знает о забеге: по этому выбираются варианты дел, реплик и концовок. */
+export interface StoryCtx {
+  kesh: KeshTruth
+  agent: RegularId
+  branch: Branch | null
+  /** Штампы сюжетных дел по ключу дела. */
+  verdicts: Record<string, Verdict>
+  flags: Record<string, boolean>
 }
