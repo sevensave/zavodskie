@@ -1,27 +1,27 @@
 import { Container, Graphics, Sprite } from 'pixi.js'
-import type { Cliffhanger } from '../content/cash'
-import { VERDICT_LABEL } from '../content/rules'
-import { SHIFT_END as END_TEXT } from '../content/cash'
+import { CASH_DAY_START } from '../content/cash'
 import { modelById } from '../content/models'
 import type { ColorKey } from '../content/palette'
-import { summarize, type ShiftState } from '../sim/shift'
+import { VERDICT_LABEL } from '../content/rules'
+import type { ShiftReport } from '../sim/campaign'
+import type { ShiftState } from '../sim/shift'
 import { col, H, W } from './gfx'
 import { Button, paperRect, Timeline } from './kit'
 import { sfx } from './sfx'
 import { TextBlock, label, lineTexture } from './text'
 
-/** Итог смены: ведомость, шкалы и клиффхэнгер. */
+/** Итог смены: ведомость, деньги, шкалы и клиффхэнгер. */
 export class Summary extends Container {
   readonly tl = new Timeline()
   private typing: { block: TextBlock; shown: number }[] = []
 
-  constructor(state: ShiftState, cliff: Cliffhanger, actions: { again: () => void; quit?: () => void }) {
+  constructor(state: ShiftState, report: ShiftReport, onHome: () => void) {
     super()
     const g = new Graphics()
     g.rect(0, 0, W, H).fill(col('ink'))
     this.addChild(g)
 
-    const title = new Sprite(lineTexture(END_TEXT.title, 'amber', 2))
+    const title = new Sprite(lineTexture(`СМЕНА ${report.day + 1} ЗАКРЫТА`, 'amber', 2))
     title.position.set(12, 8)
     this.addChild(title)
     const time = label('06:00 · ОТДЕЛ ВОЗВРАТОВ · ОКНО 3', 'slate')
@@ -30,16 +30,15 @@ export class Summary extends Container {
 
     // Ведомость.
     const sheet = new Graphics()
-    paperRect(sheet, 10, 40, 222, 220, 'paper')
+    paperRect(sheet, 10, 40, 222, 222, 'paper')
     this.addChild(sheet)
     const head = label('ВЕДОМОСТЬ', 'ink')
     head.position.set(16, 45)
-    this.addChild(head)
     const cols = label('устройство      штамп     по инстр.', 'slate')
     cols.position.set(16, 56)
-    this.addChild(cols)
+    this.addChild(head, cols)
     state.results.forEach((r, i) => {
-      const y = 67 + i * 10
+      const y = 67 + i * 9
       const name = label(modelById(r.modelId).name, 'ink')
       name.position.set(16, y)
       const v = label(VERDICT_LABEL[r.verdict], 'blue')
@@ -48,19 +47,30 @@ export class Summary extends Container {
       const mark = label(r.verdict === 'junk' ? 'не видели' : ok ? 'да' : 'НЕТ', ok ? 'olive' : 'red')
       mark.position.set(150, y)
       this.addChild(name, v, mark)
+      if (r.bribe) {
+        const b = label('$', 'rust')
+        b.position.set(200, y)
+        this.addChild(b)
+      }
     })
-    const sum = summarize(state)
-    const total = sum.earned - sum.fines
-    const lines: [string, ColorKey][] = [
-      [`Закрыто дел: ${sum.closed}`, 'ink'],
-      [`Оплата: ${sum.earned} р.   Штрафы: ${sum.fines ? `−${sum.fines}` : 0} р.`, 'ink'],
-      [`Итого на руки: ${total} р.`, 'rust'],
-    ]
-    lines.forEach(([t, c], i) => {
-      const l = label(t, c)
-      l.position.set(16, 222 + i * 10)
-      this.addChild(l)
-    })
+    const s = report.summary
+    const lines: [string, ColorKey][] = [[`Оплата: ${s.earned} р.  Штрафы: ${s.fines ? `−${s.fines}` : 0} р.`, 'ink']]
+    if (s.quota > 0) {
+      lines.push([
+        `Квота сбросов ${s.resets}/${s.quota}: ${report.quotaDelta >= 0 ? '+' : '−'}${Math.abs(report.quotaDelta)} р.`,
+        report.quotaMet ? 'olive' : 'red',
+      ])
+    }
+    if (s.bribes) lines.push([`Конверты: +${s.bribes} р.`, 'rust'])
+    if (report.audit.happened) lines.push([report.audit.text, report.audit.fine ? 'red' : 'olive'])
+    lines.push([`Итого за ночь: ${report.income} р.`, 'rust'])
+    let ly = 262 - lines.length * 9 - 4
+    for (const [t, c] of lines) {
+      const b = new TextBlock(t, { width: 210, color: c })
+      b.position.set(16, ly)
+      ly += b.blockHeight
+      this.addChild(b)
+    }
 
     // Шкалы.
     const scales: [string, number, ColorKey][] = [
@@ -70,7 +80,7 @@ export class Summary extends Container {
     ]
     const sg = new Graphics()
     scales.forEach(([name, v, c], i) => {
-      const y = 46 + i * 20
+      const y = 42 + i * 19
       const l = label(name, 'fog')
       l.position.set(244, y)
       this.addChild(l)
@@ -80,16 +90,17 @@ export class Summary extends Container {
     this.addChild(sg)
 
     // Клиффхэнгер.
+    const cliff = report.cliff
     const box = new Graphics()
     const kind = cliff.kind
     const fill: ColorKey = kind === 'paper' ? 'paper' : kind === 'note' ? 'white' : 'night'
     const ink: ColorKey = kind === 'phone' ? 'amber' : 'ink'
-    paperRect(box, 244, 112, 226, 104, fill, kind === 'phone' ? 'amber' : 'ink')
+    paperRect(box, 244, 102, 226, 112, fill, kind === 'phone' ? 'amber' : 'ink')
     this.addChild(box)
     const ct = label(cliff.title, kind === 'phone' ? 'red' : 'rust')
-    ct.position.set(250, 117)
+    ct.position.set(250, 107)
     this.addChild(ct)
-    let y = 130
+    let y = 120
     const blocks: TextBlock[] = []
     for (const line of cliff.lines) {
       const b = new TextBlock(line, { width: 212, color: ink })
@@ -99,26 +110,16 @@ export class Summary extends Container {
       this.addChild(b)
       blocks.push(b)
     }
-    const bye = new TextBlock(`кэш: ${END_TEXT.cashBye}`, { width: 226, color: 'amber' })
-    bye.position.set(244, 222)
+    const byeText = report.day === 0 ? 'кэш: до завтра. не выключай меня, ладно?' : `кэш: ${CASH_DAY_START.aside[report.day % CASH_DAY_START.aside.length]}`
+    const bye = new TextBlock(byeText, { width: 226, color: 'amber' })
+    bye.position.set(244, 220)
     bye.reveal(0)
     this.addChild(bye)
-    const soon = label(END_TEXT.nextSoon, 'slate')
-    soon.position.set(244, 238)
-    soon.visible = false
-    this.addChild(soon)
 
-    const again = new Button('ЕЩЁ РАЗ', 70, 14, { bg: 'teal', fg: 'white', edge: 'cyan' }, actions.again)
-    again.position.set(244, 250)
-    again.visible = false
-    this.addChild(again)
-    let quit: Button | null = null
-    if (actions.quit) {
-      quit = new Button('ВЫЙТИ', 60, 14, { bg: 'steel', fg: 'white', edge: 'slate' }, actions.quit)
-      quit.position.set(320, 250)
-      quit.visible = false
-      this.addChild(quit)
-    }
+    const home = new Button('ДОМОЙ', 70, 14, { bg: 'teal', fg: 'white', edge: 'cyan' }, onHome)
+    home.position.set(244, 248)
+    home.visible = false
+    this.addChild(home)
 
     void (async () => {
       await this.tl.wait(900)
@@ -129,11 +130,9 @@ export class Summary extends Container {
         }
       } else sfx.paper()
       for (const b of blocks) await this.type(b)
-      await this.tl.wait(700)
+      await this.tl.wait(500)
       await this.type(bye)
-      soon.visible = true
-      again.visible = true
-      if (quit) quit.visible = true
+      home.visible = true
     })()
   }
 

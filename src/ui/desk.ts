@@ -1,12 +1,15 @@
 import { Container, Graphics, Rectangle, Sprite } from 'pixi.js'
 import { modelById } from '../content/models'
 import type { ColorKey } from '../content/palette'
-import { SHIFT1_RULES, VERDICT_LABEL, type RuleId } from '../content/rules'
+import { BRIBES } from '../content/home'
+import { rulesForDay, VERDICT_LABEL, type RuleText } from '../content/rules'
 import { formatClock, formatDate } from '../sim/dates'
 import { compareFields, type CompareResult, type FieldId } from '../sim/rules'
-import { currentCase, finishShift, judge, shiftDone, tickClock, type ShiftState } from '../sim/shift'
+import { bribeText } from '../sim/generator'
+import { currentCase, finishShift, judge, resetsDone, shiftDone, tickClock, type ShiftState } from '../sim/shift'
 import type { CaseFile, CaseResult, Verdict } from '../sim/types'
 import { col, H, W } from './gfx'
+import { Folder, FOLDER, type FolderHost } from './folder'
 import { Button, easeIn, paperRect, Timeline } from './kit'
 import { sfx } from './sfx'
 import { deviceTexture, portraitTexture, PORTRAIT_H } from './sprites'
@@ -36,6 +39,9 @@ interface Field {
   id: FieldId
   rect: Rectangle
   hit: Graphics
+  parent?: Container
+  /** board — правила на доске, case — бумаги дела, tool — экран инструмента, talk — слова. */
+  group: string
 }
 
 const WIN = { x: 124, y: 14, w: 212, h: 122 }
@@ -49,10 +55,13 @@ const STAMP_COLORS: Record<Verdict, ColorKey> = {
   scrap: 'red',
   refuse: 'violet',
   security: 'blue',
+  fraud: 'rust',
   junk: 'fog',
 }
 
-export class Desk extends Container {
+const CLAIM = { x: 174, y: 156, w: 160, h: 110 }
+
+export class Desk extends Container implements FolderHost {
   readonly tl = new Timeline()
   readonly terminal: Terminal
   state: ShiftState
@@ -70,8 +79,14 @@ export class Desk extends Container {
   private ownerBubble = new Container()
   private deviceBubble = new Container()
   private bubbleTyping: { block: TextBlock; shown: number; cps: number }[] = []
-  private passport = new Container()
+  private folder: Folder
   private claim = new Container()
+  private envelope = new Container()
+  private bribeTaken = false
+  private boardPage = 0
+  private boardRules = new Container()
+  private lampLayer = new Graphics()
+  private camBtn: Button | null = null
   private stampMark = new Container()
   private board = new Container()
   private boardDynamic = new Container()
@@ -80,7 +95,7 @@ export class Desk extends Container {
   private camT = 0
   private blackout = new Graphics()
   private queueLayer = new Graphics()
-  private toast = new Container()
+  private toastBox = new Container()
   private toastLeft = 0
   private fieldLayer = new Container()
   private marks = new Graphics()
@@ -116,7 +131,7 @@ export class Desk extends Container {
     this.world.addChild(winMask, this.windowLayer)
     this.windowLayer.addChild(this.queueLayer, this.visitor)
     this.drawCounter()
-    this.device.addChild(this.deviceSprite, this.eyes)
+    this.device.addChild(this.deviceSprite, this.eyes, this.lampLayer)
     this.world.addChild(this.device, this.plate)
     this.world.addChild(this.ownerBubble, this.deviceBubble)
 
@@ -132,7 +147,8 @@ export class Desk extends Container {
     this.terminal.drawer.addChild(this.junkBtn)
 
     this.drawDeskSurface()
-    this.world.addChild(this.passport, this.claim)
+    this.folder = new Folder(this, state.day)
+    this.world.addChild(this.folder, this.claim)
 
     // Панель действий.
     const btn = { bg: 'steel', fg: 'white', edge: 'slate' } as const
@@ -143,20 +159,39 @@ export class Desk extends Container {
     this.btnDiag.position.set(408, 156)
     this.btnInspect.position.set(340, 173)
     this.world.addChild(this.btnAsk, this.btnDiag, this.btnInspect)
-    const order: [Verdict, number, number][] = [
-      ['return', 340, 192],
-      ['reset', 410, 192],
-      ['scrap', 340, 230],
-      ['refuse', 410, 230],
-    ]
-    for (const [v, x, y] of order) this.world.addChild(this.makeStamp(v, x, y, 66, 34))
+    // В первую смену четыре штампа, дальше — шесть.
+    const order: [Verdict, number, number, number][] =
+      state.day === 0
+        ? [
+            ['return', 340, 192, 66],
+            ['reset', 410, 192, 66],
+            ['scrap', 340, 230, 66],
+            ['refuse', 410, 230, 66],
+          ]
+        : [
+            ['return', 340, 192, 44],
+            ['reset', 386, 192, 44],
+            ['scrap', 432, 192, 44],
+            ['refuse', 340, 230, 44],
+            ['security', 386, 230, 44],
+            ['fraud', 432, 230, 44],
+          ]
+    for (const [v, x, y, w] of order) this.world.addChild(this.makeStamp(v, x, y, w, 34))
 
-    this.world.addChild(this.marks, this.fieldLayer, this.toast)
+    // Кнопка в ящике терминала: попросить Кэша ослепить камеру.
+    if (state.day > 0) {
+      this.camBtn = new Button('', 124, 14, { bg: 'shadow', fg: 'amber', edge: 'steel' }, () => this.emit('blackout'))
+      this.camBtn.position.set(346, 126)
+      this.world.addChild(this.camBtn)
+      this.refreshCamBtn()
+    }
+
+    this.world.addChild(this.envelope, this.marks, this.fieldLayer, this.toastBox)
     this.blackout.rect(0, 0, W, H).fill({ color: col('blue'), alpha: 0.18 })
     for (let y = 0; y < H; y += 3) this.blackout.rect(0, y, W, 1).fill({ color: col('ink'), alpha: 0.25 })
     this.blackout.visible = false
     // Оверлеи только рисуют и никогда не ловят клики.
-    for (const o of [this.blackout, this.marks, this.toast, this.ownerBubble, this.deviceBubble]) o.eventMode = 'none'
+    for (const o of [this.blackout, this.marks, this.toastBox, this.ownerBubble, this.deviceBubble]) o.eventMode = 'none'
     this.addChild(this.blackout)
 
     this.setButtonsEnabled(false)
@@ -226,36 +261,93 @@ export class Desk extends Container {
     paperRect(g, 8, 10, 108, 134, 'paper')
     g.rect(60, 8, 4, 4).fill(col('red'))
     this.board.addChild(g)
-    const title = label(`ПРАВИЛА · СМЕНА ${this.state.day + 1}`, 'ink')
+    const title = label(`СМЕНА ${this.state.day + 1} ·`, 'ink')
     title.position.set(12, 13)
     this.board.addChild(title)
-    const dateText = `Сегодня ${formatDate(this.state.day)}`
+    const dateText = formatDate(this.state.day)
     const today = label(dateText, 'rust')
-    today.position.set(12, 22)
+    today.position.set(14 + title.width, 13)
     this.board.addChild(today)
-    this.addField('today', new Rectangle(11, 21, measure(dateText) + 2, 9))
-    let y = 33
-    SHIFT1_RULES.forEach((r, i) => {
-      const t = new TextBlock(`${i + 1}. ${r.text}`, { width: 102, color: 'ink', lineHeight: 8 })
-      t.position.set(12, y)
-      this.board.addChild(t)
-      this.addField(`rule.${r.id as RuleId}` as FieldId, new Rectangle(11, y - 1, 103, t.blockHeight + 1))
-      y += t.blockHeight + 2
-    })
-    const sep = new Graphics().rect(12, y, 100, 1).fill(col('fog'))
-    this.board.addChild(sep)
-    this.boardDynamic.position.set(12, y + 2)
+    this.addField('today', new Rectangle(13 + title.width, 12, measure(dateText) + 2, 9), undefined, 'board')
+    this.board.addChild(this.boardRules)
+    this.boardDynamic.position.set(12, this.state.quota > 0 ? 124 : 133)
     this.board.addChild(this.boardDynamic)
+    this.renderRules()
     this.refreshBoard()
+  }
+
+  /** Правила дня, страницами: к концу кампании на одну доску они не влезают. */
+  private rulePages(): RuleText[][] {
+    const rules = rulesForDay(this.state.day)
+    const bottom = (this.state.quota > 0 ? 124 : 133) - 3
+    const heights = rules.map((r) => {
+      const t = new TextBlock(`00. ${r.text}`, { width: 102, lineHeight: 8 })
+      const need = t.blockHeight + 2
+      t.destroy()
+      return need
+    })
+    // Влезает всё — одна страница; нет — оставляем строку под «листать».
+    const fits = heights.reduce((a, b) => a + b, 0) <= bottom - 24
+    const limit = fits ? bottom - 24 : bottom - 24 - 11
+    const pages: RuleText[][] = [[]]
+    let h = 0
+    for (const [i, r] of rules.entries()) {
+      const need = heights[i]!
+      if (h + need > limit && pages[pages.length - 1]!.length) {
+        pages.push([])
+        h = 0
+      }
+      pages[pages.length - 1]!.push(r)
+      h += need
+    }
+    return pages
+  }
+
+  private renderRules() {
+    this.boardRules.removeChildren()
+    this.removeFields('board-rule')
+    const pages = this.rulePages()
+    this.boardPage = Math.min(this.boardPage, pages.length - 1)
+    const all = rulesForDay(this.state.day)
+    let y = 24
+    for (const r of pages[this.boardPage]!) {
+      const t = new TextBlock(`${all.indexOf(r) + 1}. ${r.text}`, { width: 102, color: r.from === this.state.day && r.from > 0 ? 'rust' : 'ink', lineHeight: 8 })
+      t.position.set(12, y)
+      this.boardRules.addChild(t)
+      this.addField(`rule.${r.id}`, new Rectangle(11, y - 1, 103, t.blockHeight + 1), undefined, 'board-rule')
+      y += t.blockHeight + 2
+    }
+    if (pages.length > 1) {
+      const by = (this.state.quota > 0 ? 124 : 133) - 13
+      const pg = label(`стр. ${this.boardPage + 1}/${pages.length}`, 'slate')
+      pg.position.set(12, by)
+      this.boardRules.addChild(pg)
+      const flip = new Button('ЛИСТАТЬ', 44, 10, { bg: 'fog', fg: 'ink', edge: 'white' }, () => {
+        this.boardPage = (this.boardPage + 1) % pages.length
+        sfx.paper()
+        this.renderRules()
+      })
+      flip.position.set(68, by - 1)
+      flip.labelY = 0
+      this.boardRules.addChild(flip)
+    }
+    this.refreshInspect()
   }
 
   private refreshBoard() {
     this.boardDynamic.removeChildren()
     const s = this.state
+    const sep = new Graphics().rect(0, -2, 100, 1).fill(col('fog'))
     const money = label(`Касса ${s.scales.money} р.`, 'ink')
     const warn = label(`Пред. ${Math.min(s.warnings, 2)}/2`, s.warnings >= 2 ? 'red' : 'ink')
     warn.x = 102 - warn.width
-    this.boardDynamic.addChild(money, warn)
+    this.boardDynamic.addChild(sep, money, warn)
+    if (s.quota > 0) {
+      const done = resetsDone(s)
+      const q = label(`Квота сбросов ${done}/${s.quota}`, done >= s.quota ? 'olive' : 'rust')
+      q.y = 9
+      this.boardDynamic.addChild(q)
+    }
   }
 
   private makeStamp(v: Verdict, x: number, y: number, w: number, h: number): Button {
@@ -277,12 +369,12 @@ export class Desk extends Container {
 
   // ---------- Поля для сверки ----------
 
-  private addField(id: FieldId, rect: Rectangle, parent?: Container) {
+  addField(id: FieldId, rect: Rectangle, parent?: Container, group = 'case') {
     const hit = new Graphics()
     hit.rect(0, 0, rect.width, rect.height).fill({ color: 0xffffff, alpha: 0.001 })
-    hit.eventMode = 'none'
+    hit.eventMode = this.inspect ? 'static' : 'none'
     hit.cursor = 'pointer'
-    const f: Field = { id, rect, hit }
+    const f: Field = { id, rect, hit, parent, group }
     hit.on('pointerover', () => {
       this.hovered = f
       this.drawMarks()
@@ -294,24 +386,32 @@ export class Desk extends Container {
     hit.on('pointertap', () => this.pickField(f))
     this.fields.push(f)
     this.fieldLayer.addChild(hit)
-    // Координаты поля — в системе экрана; parent нужен, чтобы поле ездило вместе с бумагой.
-    ;(f as Field & { parent?: Container }).parent = parent
     this.syncField(f)
   }
 
+  /** Поля задаются в координатах экрана; parent нужен, чтобы поле ездило вместе с бумагой. */
   private syncField(f: Field) {
-    const p = (f as Field & { parent?: Container }).parent
-    const ox = p ? p.x : 0
-    const oy = p ? p.y : 0
+    const ox = f.parent ? f.parent.x : 0
+    const oy = f.parent ? f.parent.y : 0
     f.hit.position.set(f.rect.x + ox, f.rect.y + oy)
   }
 
-  private removeCaseFields() {
+  removeFields(group: string) {
     this.fields = this.fields.filter((f) => {
-      const keep = f.id === 'today' || f.id.startsWith('rule.')
-      if (!keep) f.hit.destroy()
-      return keep
+      if (f.group !== group) return true
+      if (this.hovered === f) this.hovered = null
+      f.hit.destroy()
+      return false
     })
+  }
+
+  private removeCaseFields() {
+    for (const g of ['case', 'tool', 'talk', 'diag']) this.removeFields(g)
+  }
+
+  refreshInspect() {
+    for (const f of this.fields) f.hit.eventMode = this.inspect ? 'static' : 'none'
+    this.drawMarks()
   }
 
   private fieldRect(f: Field): Rectangle {
@@ -324,9 +424,8 @@ export class Desk extends Container {
     this.inspect = on
     this.selected = null
     this.btnInspect.active = on
-    for (const f of this.fields) f.hit.eventMode = on ? 'static' : 'none'
     this.emit('cursor', on ? 'inspect' : 'arrow')
-    this.drawMarks()
+    this.refreshInspect()
   }
 
   isInspecting() {
@@ -349,7 +448,8 @@ export class Desk extends Container {
     const r = compareFields(c, this.state.day, a, b)
     this.showResult(a, b, r)
     this.script.onCompare(c, a, b, r)
-    if (r.kind === 'mismatch' && c.excuse && r.rule !== 'deviant' && r.rule !== 'error') this.say('owner', c.excuse)
+    const caught = r.kind === 'mismatch' && ['docs', 'warranty', 'firmware', 'seal', 'abuse'].includes(r.rule)
+    if (caught && c.excuse) this.say('owner', c.excuse)
   }
 
   private resultMarks: { a: Rectangle; b: Rectangle; color: ColorKey } | null = null
@@ -362,19 +462,23 @@ export class Desk extends Container {
     this.marksLeft = 2500
     if (r.kind === 'match') sfx.match()
     else if (r.kind === 'mismatch') sfx.mismatch()
-    this.showToast(r.note, color)
+    this.toast(r.note, color)
     this.drawMarks()
   }
 
+  toast(text: string, color: ColorKey) {
+    this.showToast(text, color)
+  }
+
   private showToast(text: string, color: ColorKey) {
-    this.toast.removeChildren()
+    this.toastBox.removeChildren()
     const t = new TextBlock(text, { width: WIN.w - 10, color })
     const g = new Graphics()
     const h = t.blockHeight + 3
     // Наверху окна, поверх таблички: посетителя и устройство не закрывает.
     g.rect(WIN.x, WIN.y, WIN.w, h).fill({ color: col('ink'), alpha: 0.92 })
     t.position.set(WIN.x + 5, WIN.y + 2)
-    this.toast.addChild(g, t)
+    this.toastBox.addChild(g, t)
     this.toastLeft = 3500
   }
 
@@ -425,8 +529,10 @@ export class Desk extends Container {
     const dy = COUNTER_Y - this.deviceSprite.texture.height + 3
     this.device.position.set(dx, -60)
     this.device.visible = true
-    this.passport.y = 120
+    this.folder.y = 120
     this.claim.y = 120
+    this.envelope.removeChildren()
+    this.bribeTaken = false
 
     sfx.bell()
     await this.walk(VISITOR_X, 900)
@@ -435,11 +541,13 @@ export class Desk extends Container {
     this.shake(120)
     this.buildPlate(c)
     sfx.paper()
-    await Promise.all([this.tl.move(this.passport, 0, 0, 350), this.tl.move(this.claim, 0, 0, 420)])
+    await Promise.all([this.tl.move(this.folder, 0, 0, 350), this.tl.move(this.claim, 0, 0, 420)])
     for (const f of this.fields) this.syncField(f)
     this.busy = false
     this.setButtonsEnabled(true)
+    this.refreshCamBtn()
     this.script.onCaseStart(c)
+    if (c.bribe) this.offerBribe(c)
   }
 
   private async walk(x: number, ms: number) {
@@ -485,75 +593,81 @@ export class Desk extends Container {
 
   private buildDocs(c: CaseFile) {
     this.removeCaseFields()
-    this.passport.removeChildren()
     this.claim.removeChildren()
-
-    // Паспорт устройства: фирменная карточка.
-    const pg = new Graphics()
-    const px = 6
-    const py = 158
-    paperRect(pg, px, py, 146, 104, 'white')
-    pg.rect(px + 1, py + 1, 144, 12).fill(col('teal'))
-    this.passport.addChild(pg)
-    const ph = label('«ДОМОВОЙ» · ПАСПОРТ', 'white')
-    ph.position.set(px + 5, py + 3)
-    this.passport.addChild(ph)
-    const rows: [string, string, FieldId][] = [
-      ['Модель', c.passport.model, 'p.model'],
-      ['Серийный №', c.passport.serial, 'p.serial'],
-      ['Прошивка', c.passport.firmware, 'p.firmware'],
-      ['Выпущен', formatDate(c.passport.issued), 'p.issued'],
-      ['Гарантия до', formatDate(c.passport.warrantyUntil), 'p.warranty'],
-    ]
-    rows.forEach(([k, v, id], i) => {
-      const y = py + 18 + i * 14
-      const kl = label(k, 'slate')
-      kl.position.set(px + 5, y)
-      const vl = label(v, 'ink')
-      vl.position.set(px + 62, y)
-      this.passport.addChild(kl, vl)
-      pg.rect(px + 5, y + 10, 136, 1).fill(col('paper'))
-      this.addField(id, new Rectangle(px + 61, y - 1, measure(v) + 3, 10), this.passport)
-    })
-    const model = modelById(c.modelId)
-    const kind = label(model.kind, 'fog')
-    kind.position.set(px + 5, py + 90)
-    this.passport.addChild(kind)
+    this.folder.setCase(c)
 
     // Заявление: от руки, синими чернилами.
     const cg = new Graphics()
-    const cx = 156
-    const cy = 156
-    paperRect(cg, cx, cy, 178, 110, 'paper')
+    const { x: cx, y: cy, w: cw, h: ch } = CLAIM
+    paperRect(cg, cx, cy, cw, ch, 'paper')
     this.claim.addChild(cg)
-    const ch = label('ЗАЯВЛЕНИЕ НА ВОЗВРАТ', 'ink')
-    ch.position.set(cx + 6, cy + 4)
-    cg.rect(cx + 6, cy + 13, 166, 1).fill(col('ink'))
-    this.claim.addChild(ch)
+    const head = label('ЗАЯВЛЕНИЕ НА ВОЗВРАТ', 'ink')
+    head.position.set(cx + 5, cy + 4)
+    cg.rect(cx + 5, cy + 13, cw - 10, 1).fill(col('ink'))
+    this.claim.addChild(head)
     const crow: [string, string, FieldId | null][] = [
-      ['Владелец:', c.claim.owner, null],
-      ['Модель:', c.claim.model, 'c.model'],
-      ['Серийный №:', c.claim.serial, 'c.serial'],
-      ['Куплено:', formatDate(c.claim.bought), 'c.bought'],
+      ['Владелец', c.claim.owner, null],
+      ['Модель', c.claim.model, 'c.model'],
+      ['Серийный №', c.claim.serial, 'c.serial'],
+      ['Куплено', formatDate(c.claim.bought), 'c.bought'],
     ]
     crow.forEach(([k, v, id], i) => {
       const y = cy + 17 + i * 11
       const kl = label(k, 'slate')
-      kl.position.set(cx + 6, y)
+      kl.position.set(cx + 5, y)
       const vl = label(v, 'blue')
-      vl.position.set(cx + 62, y)
+      vl.position.set(cx + 58, y)
       this.claim.addChild(kl, vl)
-      if (id) this.addField(id, new Rectangle(cx + 61, y - 1, measure(v) + 3, 10), this.claim)
+      if (id) this.addField(id, new Rectangle(cx + 57, y - 1, measure(v) + 3, 10), this.claim)
     })
     const jl = label('Жалоба:', 'slate')
-    jl.position.set(cx + 6, cy + 62)
+    jl.position.set(cx + 5, cy + 62)
     this.claim.addChild(jl)
-    const comp = new TextBlock(c.claim.complaint, { width: 160, color: 'blue' })
-    comp.position.set(cx + 8, cy + 72)
+    const comp = new TextBlock(c.claim.complaint, { width: cw - 12, color: 'blue' })
+    comp.position.set(cx + 7, cy + 72)
     this.claim.addChild(comp)
-    this.addField('c.complaint', new Rectangle(cx + 7, cy + 71, 162, comp.blockHeight + 1), this.claim)
+    this.addField('c.complaint', new Rectangle(cx + 6, cy + 71, cw - 10, comp.blockHeight + 1), this.claim)
     this.stampMark.position.set(0, 0)
     this.claim.addChild(this.stampMark)
+  }
+
+  // ---------- Взятка ----------
+
+  private offerBribe(c: CaseFile) {
+    const b = c.bribe!
+    const want = BRIBES.wants[b.wants] ?? ''
+    this.say('owner', `${BRIBES.offer[c.id.length % BRIBES.offer.length]} ${want}`)
+    // Конверт ложится на стойку перед посетителем: бумаги он не закрывает.
+    const g = new Graphics()
+    const x = WIN.x + 3
+    const y = COUNTER_Y - 29
+    g.rect(x, y, 112, 29).fill(col('ink'))
+    g.rect(x + 1, y + 1, 110, 27).fill(col('woodLight'))
+    g.rect(x + 1, y + 1, 110, 1).fill(col('skin2'))
+    this.envelope.addChild(g)
+    const amt = label(`Конверт · ${b.amount} р.`, 'ink')
+    amt.position.set(x + 4, y + 2)
+    const note = new TextBlock(bribeText(b).replace('Конверт. ', ''), { width: 104, color: 'shadow' })
+    note.position.set(x + 4, y + 11)
+    this.envelope.addChild(amt, note)
+    const take = new Button(BRIBES.take, 44, 11, { bg: 'olive', fg: 'white', edge: 'green' }, () => {
+      this.bribeTaken = true
+      sfx.paper()
+      this.envelope.removeChildren()
+      const t = label(`+${b.amount} р. в кармане`, 'olive')
+      t.position.set(WIN.x + 4, COUNTER_Y + 4)
+      this.envelope.addChild(t)
+      this.emit('bribe')
+    })
+    const no = new Button(BRIBES.refuse, 50, 11, { bg: 'steel', fg: 'white', edge: 'slate' }, () => {
+      sfx.click()
+      this.envelope.removeChildren()
+    })
+    take.position.set(x, COUNTER_Y + 2)
+    no.position.set(x + 46, COUNTER_Y + 2)
+    take.labelY = 1
+    no.labelY = 1
+    this.envelope.addChild(take, no)
   }
 
   // ---------- Реплики ----------
@@ -595,6 +709,8 @@ export class Desk extends Container {
     if (!c || this.busy) return
     this.say('owner', c.talk[this.talkIndex % c.talk.length]!)
     this.talkIndex++
+    this.removeFields('talk')
+    this.addField('talk', new Rectangle(WIN.x + 4, WIN.y + 16, 104, this.ownerBubble.height), undefined, 'talk')
     this.script.onAsk(c)
   }
 
@@ -602,12 +718,8 @@ export class Desk extends Container {
     const c = currentCase(this.state)
     if (!c || this.busy) return
     this.say('device', c.diag.text)
-    this.fields = this.fields.filter((f) => {
-      if (f.id === 'diag') f.hit.destroy()
-      return f.id !== 'diag'
-    })
-    this.addField('diag', new Rectangle(WIN.x + 108, WIN.y + 16, 108, this.deviceBubble.height))
-    for (const f of this.fields) f.hit.eventMode = this.inspect ? 'static' : 'none'
+    this.removeFields('diag')
+    this.addField('diag', new Rectangle(WIN.x + 108, WIN.y + 16, 108, this.deviceBubble.height), undefined, 'diag')
     this.script.onDiag(c)
   }
 
@@ -636,6 +748,7 @@ export class Desk extends Container {
   // ---------- Штамп ----------
 
   setButtonsEnabled(on: boolean) {
+    this.refreshCamBtn()
     this.btnAsk.enabled = on
     this.btnDiag.enabled = on
     this.btnInspect.enabled = on
@@ -661,8 +774,8 @@ export class Desk extends Container {
     const text = VERDICT_LABEL[v]
     const w = measure(text, 2) + 10
     const g = new Graphics()
-    const x = 334 - w - 8 + Math.floor(Math.random() * 5)
-    const y = 236 + Math.floor(Math.random() * 4)
+    const x = CLAIM.x + CLAIM.w - w - 6 + Math.floor(Math.random() * 5)
+    const y = 238 + Math.floor(Math.random() * 4)
     g.rect(x, y, w, 22).stroke({ color: col(color), width: 2, alignment: 1 })
     const t = new Sprite(lineTexture(text, color, 2))
     t.position.set(x + 5, y + 4)
@@ -670,7 +783,8 @@ export class Desk extends Container {
     sfx.stamp()
     this.shake(150)
 
-    const { state, result } = judge(this.state, v, { cameraOff: !this.cameraOn })
+    this.envelope.removeChildren()
+    const { state, result } = judge(this.state, v, { cameraOff: !this.cameraOn, bribeTaken: this.bribeTaken })
     this.state = state
     this.refreshBoard()
     await this.tl.wait(350)
@@ -699,7 +813,8 @@ export class Desk extends Container {
 
   private async depart(v: Verdict) {
     sfx.paper()
-    const docs = Promise.all([this.tl.move(this.passport, 0, 120, 300), this.tl.move(this.claim, 0, 120, 340)])
+    if (this.folder.lampOn) this.setLamp(false)
+    const docs = Promise.all([this.tl.move(this.folder, 0, 120, 300), this.tl.move(this.claim, 0, 120, 340)])
     this.plate.removeChildren()
     this.removeCaseFields()
     if (v === 'scrap' || v === 'junk') {
@@ -721,11 +836,37 @@ export class Desk extends Container {
 
   setCamera(on: boolean) {
     this.cameraOn = on
+    this.refreshCamBtn()
     this.blackout.visible = !on
     const junk = this.stamps.get('junk')
     if (junk) junk.enabled = !on
     if (on) sfx.camOn()
     else sfx.camOff()
+  }
+
+  refreshCamBtn() {
+    if (!this.camBtn) return
+    const n = this.state.blackouts
+    // Пока камера слепа, на этом месте выезжает ящик с тайным штампом.
+    this.camBtn.visible = this.cameraOn
+    this.camBtn.setCaption(n > 0 ? `ОСЛЕПИТЬ КАМЕРУ · ${n}` : 'КАМЕРА ПИШЕТ')
+    this.camBtn.enabled = n > 0 && this.cameraOn && !this.busy
+  }
+
+  /** Лампа: пломбы на корпусе светятся, сорванная — нет. */
+  setLamp(on: boolean) {
+    const g = this.lampLayer
+    g.clear()
+    const c = currentCase(this.state)
+    if (!on || !c) return
+    const t = this.deviceSprite.texture
+    g.rect(0, 0, t.width, t.height).fill({ color: col('violet'), alpha: 0.35 })
+    c.tools.seals.forEach((ok, i) => {
+      const x = Math.floor(t.width * (i === 0 ? 0.25 : 0.65))
+      const y = Math.floor(t.height * 0.55)
+      g.rect(x, y, 5, 2).fill(col(ok ? 'cyan' : 'shadow'))
+      if (!ok) g.rect(x + 2, y - 1, 1, 4).fill(col('red'))
+    })
   }
 
   hasCase(): boolean {
@@ -770,7 +911,7 @@ export class Desk extends Container {
 
     if (this.toastLeft > 0) {
       this.toastLeft -= dtMs
-      if (this.toastLeft <= 0) this.toast.removeChildren()
+      if (this.toastLeft <= 0) this.toastBox.removeChildren()
     }
     if (this.marksLeft > 0) {
       this.marksLeft -= dtMs
@@ -787,5 +928,6 @@ export class Desk extends Container {
 
   onKey(key: string) {
     if (key === ' ' || key === 'Space') this.toggleInspect()
+    if (/^[1-7]$/.test(key) && !this.busy) this.folder.showIndex(Number(key) - 1)
   }
 }

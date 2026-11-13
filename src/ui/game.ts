@@ -1,8 +1,12 @@
 // Строгая политика безопасности запрещает eval: Pixi подключает свой вариант шейдеров без него.
 import 'pixi.js/unsafe-eval'
 import { Application, Container, Graphics, Rectangle, Sprite, type Texture } from 'pixi.js'
-import { METLA, SHIFT1_GENERATED, TIMOSHA } from '../content/shift1'
-import { startShift, summarize, type ShiftState } from '../sim/shift'
+import type { BillId } from '../content/home'
+import { campaignOver, closeShift, newCampaign, payBills, SAVE_VERSION, setupShift, type Campaign } from '../sim/campaign'
+import { formatDate } from '../sim/dates'
+import type { ShiftState } from '../sim/shift'
+import { Card } from './card'
+import { DayScript } from './dayscript'
 import { Desk } from './desk'
 import { col, H, W } from './gfx'
 import { Button } from './kit'
@@ -10,6 +14,8 @@ import { sfx, unlockAudio } from './sfx'
 import { Shift1Script } from './shift1script'
 import { saveSlot } from './storage'
 import { Summary } from './summary'
+import { Home } from './home'
+import { loadSlot } from './storage'
 import { label, loadFont } from './text'
 
 declare const __DEV__: boolean
@@ -17,7 +23,11 @@ declare const __APP_VERSION__: string
 
 type Scene = Container & { update(dtMs: number): void }
 
-const SAVE_VERSION = 1
+async function loadCampaign(): Promise<Campaign | null> {
+  const c = await loadSlot<Campaign>('campaign')
+  // Старые сохранения (до кампании) не переносим: в них только итог первой смены.
+  return c && c.v === SAVE_VERSION ? c : null
+}
 
 /** Курсоры рисуются в игре, чтобы оставаться пиксельными при любом масштабе. */
 function cursorTexture(kind: 'arrow' | 'inspect'): Texture {
@@ -82,7 +92,16 @@ export async function boot(host: HTMLElement) {
   let scene: Scene | null = null
   let desk: Desk | null = null
   let speed = 1
-  const pause = buildPause(() => setPaused(false))
+  let campaign: Campaign = (await loadCampaign()) ?? newCampaign(`ночь-${Math.floor(Math.random() * 1e9)}`)
+  const pause = buildPause(
+    () => setPaused(false),
+    () => {
+      setPaused(false)
+      campaign = newCampaign(`ночь-${Math.floor(Math.random() * 1e9)}`)
+      void saveSlot('campaign', campaign)
+      route()
+    },
+  )
   app.stage.addChildAt(pause, app.stage.children.length - 1)
 
   const setScene = (s: Scene) => {
@@ -93,26 +112,46 @@ export async function boot(host: HTMLElement) {
     cursor.texture = cursors.arrow
   }
 
-  const startDay1 = () => {
-    const seed = `ночь-${Math.floor(Math.random() * 1e9)}`
-    const state = startShift(seed, 0, [TIMOSHA, METLA], SHIFT1_GENERATED)
-    const script = new Shift1Script()
-    const d = new Desk(state, script, (s) => void finish(s, script))
+  /** Куда идти из сохранения: на смену, домой или к финальной карточке. */
+  function route() {
+    if (campaignOver(campaign)) {
+      setScene(
+        new Card('21 СМЕНА ПОЗАДИ', ['Город за окном всё ещё стоит.', 'Чем всё кончится — в следующей сборке: концовки пишутся.'], 'ЗАНОВО', () => {
+          campaign = newCampaign(`ночь-${Math.floor(Math.random() * 1e9)}`)
+          void saveSlot('campaign', campaign)
+          route()
+        }),
+      )
+      return
+    }
+    if (campaign.phase === 'home') {
+      setScene(new Home(campaign, (paid) => goToShift(paid)))
+      return
+    }
+    startShiftScene()
+  }
+
+  function goToShift(paid: BillId[]) {
+    const { campaign: next, events } = payBills(campaign, paid)
+    campaign = next
+    void saveSlot('campaign', campaign)
+    if (campaignOver(campaign)) return route()
+    const lines = events.length ? events : ['Ночь прошла тихо. Даже холодильник молчал.']
+    setScene(new Card(`СМЕНА ${campaign.day + 1} · ${formatDate(campaign.day)}`, lines, 'К СТОЙКЕ', startShiftScene))
+  }
+
+  function startShiftScene() {
+    const state = setupShift(campaign)
+    const script = campaign.day === 0 ? new Shift1Script() : new DayScript(campaign.day)
+    const d = new Desk(state, script, (s) => finish(s))
     d.on('cursor', (k: 'arrow' | 'inspect') => (cursor.texture = cursors[k]))
     setScene(d)
   }
 
-  const finish = async (s: ShiftState, script: Shift1Script) => {
-    await saveSlot('campaign', {
-      v: SAVE_VERSION,
-      version: __APP_VERSION__,
-      completedShift: s.day + 1,
-      scales: s.scales,
-      summary: summarize(s),
-      seed: s.seed,
-      savedAt: new Date().toISOString(),
-    })
-    setScene(new Summary(s, script.cliffhanger(), { again: startDay1, quit: window.zavod ? () => window.zavod?.quit() : undefined }))
+  function finish(s: ShiftState) {
+    campaign = closeShift(campaign, s)
+    void saveSlot('campaign', campaign)
+    setScene(new Summary(s, campaign.last!, () => route()))
   }
 
   function setPaused(on: boolean) {
@@ -122,56 +161,85 @@ export async function boot(host: HTMLElement) {
 
   addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      if (desk) setPaused(!pause.visible)
+      setPaused(!pause.visible)
       return
     }
     if (pause.visible) return
-    if (e.key === ' ') {
-      e.preventDefault()
-      desk?.onKey(' ')
-    }
+    if (e.key === ' ') e.preventDefault()
+    desk?.onKey(e.key)
     if (__DEV__ && e.key === 'F2') speed = speed === 1 ? 8 : 1
   })
 
   // Для проверки из консоли браузера в режиме разработки.
-  if (__DEV__) (window as unknown as { __zavod: unknown }).__zavod = { app, get desk() { return desk }, get scene() { return scene } }
+  if (__DEV__) {
+    ;(window as unknown as { __zavod: unknown }).__zavod = {
+      app,
+      get desk() {
+        return desk
+      },
+      get scene() {
+        return scene
+      },
+      get campaign() {
+        return campaign
+      },
+      /** Перепрыгнуть на смену N (с нуля): для проверки поздних инструментов. */
+      jump(day: number) {
+        campaign = { ...campaign, day, phase: 'shift' }
+        route()
+      },
+    }
+  }
 
   app.ticker.add((t) => {
     const dt = Math.min(100, t.deltaMS) * speed
     scene?.update(dt)
   })
 
-  startDay1()
+  route()
   void window.zavod?.checkUpdate().then((u) => {
     if (u) console.info(`Вышла версия ${u.version}: ${u.url}`)
   })
   void sfx
 }
 
-function buildPause(resume: () => void): Container {
+function buildPause(resume: () => void, restart: () => void): Container {
   const c = new Container()
   const g = new Graphics()
   g.rect(0, 0, W, H).fill({ color: col('ink'), alpha: 0.85 })
-  g.rect(170, 90, 140, 90).fill(col('ink'))
-  g.rect(171, 91, 138, 88).fill(col('night'))
+  g.rect(170, 80, 140, 110).fill(col('ink'))
+  g.rect(171, 81, 138, 108).fill(col('night'))
   c.addChild(g)
   const t = label('ПЕРЕРЫВ', 'amber', 2)
-  t.position.set(240 - t.width / 2, 98)
+  t.position.set(240 - t.width / 2, 88)
   c.addChild(t)
   const style = { bg: 'steel', fg: 'white', edge: 'slate' } as const
   const b1 = new Button('ПРОДОЛЖИТЬ', 110, 14, style, resume)
-  b1.position.set(185, 122)
+  b1.position.set(185, 112)
   const b2 = new Button('ПОЛНЫЙ ЭКРАН', 110, 14, style, () => {
     if (window.zavod) window.zavod.toggleFullscreen()
     else if (document.fullscreenElement) void document.exitFullscreen()
     else void document.documentElement.requestFullscreen()
   })
-  b2.position.set(185, 140)
-  c.addChild(b1, b2)
+  b2.position.set(185, 130)
+  // Новая игра стирает кампанию: просим нажать дважды.
+  let armed = false
+  const b3 = new Button('НОВАЯ ИГРА', 110, 14, style, () => {
+    if (!armed) {
+      armed = true
+      b3.setCaption('ТОЧНО? ЕЩЁ РАЗ')
+      return
+    }
+    armed = false
+    b3.setCaption('НОВАЯ ИГРА')
+    restart()
+  })
+  b3.position.set(185, 148)
+  c.addChild(b1, b2, b3)
   if (window.zavod) {
-    const b3 = new Button('ВЫЙТИ', 110, 14, style, () => window.zavod?.quit())
-    b3.position.set(185, 158)
-    c.addChild(b3)
+    const b4 = new Button('ВЫЙТИ', 110, 14, style, () => window.zavod?.quit())
+    b4.position.set(185, 166)
+    c.addChild(b4)
   }
   c.visible = false
   return c
