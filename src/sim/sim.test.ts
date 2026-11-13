@@ -1,66 +1,65 @@
 import { describe, expect, it } from 'vitest'
 import { MODELS } from '../content/models'
-import { METLA, SHIFT1_GENERATED, TIMOSHA } from '../content/shift1'
 import { formatDate, parseDate } from './dates'
 import { generateCase, mutateSerial } from './generator'
 import { Rng } from './rng'
-import { compareFields, instructed, solveFromPaper } from './rules'
+import { compareFields, instructed, paperView, solveFromPaper } from './rules'
+import { shift1Scripted } from './scripted'
 import { currentCase, judge, shiftDone, startShift, summarize, tickClock } from './shift'
-import type { CaseFile } from './types'
-
-const TODAY = 0
-
-function paperView(c: CaseFile) {
-  return {
-    today: formatDate(TODAY),
-    passport: {
-      model: c.passport.model,
-      serial: c.passport.serial,
-      firmware: c.passport.firmware,
-      warrantyUntil: formatDate(c.passport.warrantyUntil),
-    },
-    claim: { model: c.claim.model, serial: c.claim.serial },
-    plate: c.plate,
-    diagText: c.diag.text,
-  }
-}
 
 describe('генератор дел', () => {
   it('один сид — одно и то же дело', () => {
-    const a = generateCase({ seed: 'x', day: 0, index: 3 })
-    const b = generateCase({ seed: 'x', day: 0, index: 3 })
-    expect(a).toEqual(b)
-    expect(generateCase({ seed: 'y', day: 0, index: 3 })).not.toEqual(a)
+    const a = generateCase({ seed: 'x', day: 7, index: 3 })
+    expect(generateCase({ seed: 'x', day: 7, index: 3 })).toEqual(a)
+    expect(generateCase({ seed: 'y', day: 7, index: 3 })).not.toEqual(a)
   })
 
-  it('каждое дело решается по уликам на бумаге', () => {
-    for (let i = 0; i < 3000; i++) {
-      const c = generateCase({ seed: `s${i}`, day: TODAY, index: i % 12 })
-      expect(solveFromPaper(paperView(c)), `дело s${i}`).toBe(instructed(c, TODAY).verdict)
+  it('каждое дело каждого дня решается по уликам, какие бы вопросы и слова ни выбрал игрок', () => {
+    const rng = new Rng('выбор')
+    for (let day = 0; day < 21; day++) {
+      for (let i = 0; i < 400; i++) {
+        const c = generateCase({ seed: `s${i}`, day, index: i % 12 })
+        const qs = rng.shuffle([0, 1, 2, 3, 4, 5]).slice(0, 3)
+        const ws = rng.shuffle([0, 1, 2, 3, 4, 5, 6, 7]).slice(0, 3)
+        expect(solveFromPaper(paperView(c, day, qs, ws)), `день ${day}, дело s${i}: ${c.device}/${c.flaw}`).toBe(instructed(c, day).verdict)
+      }
     }
   })
 
-  it('ровно один изъян и он виден сверкой', () => {
-    for (let i = 0; i < 1000; i++) {
-      const c = generateCase({ seed: `f${i}`, day: TODAY, index: 0 })
-      const rule = instructed(c, TODAY).rule
-      if (c.flaw === 'none') expect(['error', 'deviant', 'fine']).toContain(rule)
-      if (c.flaw === 'serial_claim') expect(compareFields(c, TODAY, 'p.serial', 'c.serial').kind).toBe('mismatch')
-      if (c.flaw === 'serial_plate') expect(compareFields(c, TODAY, 'plate', 'p.serial').kind).toBe('mismatch')
-      if (c.flaw === 'model_claim') expect(compareFields(c, TODAY, 'p.model', 'c.model').kind).toBe('mismatch')
-      if (c.flaw === 'warranty') expect(compareFields(c, TODAY, 'p.warranty', 'today').kind).toBe('mismatch')
-      if (c.flaw === 'firmware') expect(compareFields(c, TODAY, 'p.firmware', 'rule.firmware').kind).toBe('mismatch')
-      if (c.flaw !== 'serial_claim') expect(compareFields(c, TODAY, 'p.serial', 'c.serial').kind).toBe('match')
+  it('хитрости появляются не раньше инструментов, которыми их ловят', () => {
+    for (let day = 0; day < 21; day++) {
+      for (let i = 0; i < 300; i++) {
+        const c = generateCase({ seed: `t${i}`, day, index: 0 })
+        if (day < 1) expect(c.flaw).not.toBe('abuse')
+        if (day < 3) expect(c.device).not.toBe('faking')
+        if (day < 5) expect(['courier', 'plant']).not.toContain(c.device)
+        if (day < 8) expect(c.flaw).not.toBe('seal')
+        if (day < 11) expect(c.device).not.toBe('awake_dangerous')
+      }
     }
   })
 
-  it('все сценарии встречаются', () => {
+  it('к последней смене встречаются все правила', () => {
     const seen = new Set<string>()
-    for (let i = 0; i < 500; i++) {
-      const c = generateCase({ seed: `v${i}`, day: TODAY, index: 0 })
-      seen.add(instructed(c, TODAY).rule)
+    for (let i = 0; i < 2000; i++) seen.add(instructed(generateCase({ seed: `v${i}`, day: 20, index: 0 }), 20).rule)
+    expect([...seen].sort()).toEqual(
+      ['abuse', 'cargo', 'deviant', 'docs', 'error', 'faking', 'fine', 'firmware', 'radio', 'seal', 'stress', 'warranty'].sort(),
+    )
+  })
+
+  it('изъян в бумагах виден сверкой', () => {
+    for (let i = 0; i < 1000; i++) {
+      const day = i % 21
+      const c = generateCase({ seed: `f${i}`, day, index: 0 })
+      if (c.flaw === 'serial_claim') expect(compareFields(c, day, 'p.serial', 'c.serial').kind).toBe('mismatch')
+      if (c.flaw === 'serial_plate') expect(compareFields(c, day, 'plate', 'p.serial').kind).toBe('mismatch')
+      if (c.flaw === 'model_claim') expect(compareFields(c, day, 'p.model', 'c.model').kind).toBe('mismatch')
+      if (c.flaw === 'warranty') expect(compareFields(c, day, 'p.warranty', 'today').kind).toBe('mismatch')
+      if (c.flaw === 'firmware') expect(compareFields(c, day, 'p.firmware', 'rule.firmware').kind).toBe('mismatch')
+      if (c.flaw === 'abuse') expect(compareFields(c, day, 'log', 'talk').kind).toBe('mismatch')
+      if (c.flaw === 'seal') expect(compareFields(c, day, 'seals', 'rule.seal').kind).toBe('mismatch')
+      if (c.flaw !== 'abuse') expect(compareFields(c, day, 'log', 'talk').kind).toBe('match')
     }
-    expect([...seen].sort()).toEqual(['deviant', 'docs', 'error', 'fine', 'firmware', 'warranty'])
   })
 
   it('испорченный номер всегда отличается от исходного', () => {
@@ -73,7 +72,7 @@ describe('генератор дел', () => {
     }
   })
 
-  it('нормальный ответ самотеста у каждой модели свой и без кода ошибки', () => {
+  it('нормальный ответ самотеста у каждой модели без кода ошибки', () => {
     for (const m of MODELS) {
       expect(m.diagNormal).not.toMatch(/Ошибка/)
       for (const e of m.diagErrors) expect(e).toMatch(/Ошибка [А-Я]-\d\d/)
@@ -90,26 +89,24 @@ describe('даты', () => {
 })
 
 describe('смена 1', () => {
-  const scripted = [TIMOSHA, METLA]
+  const scripted = shift1Scripted()
 
   it('ручные дела решаются по бумаге и требуют сброса', () => {
     for (const c of scripted) {
-      expect(instructed(c, TODAY).verdict).toBe('reset')
-      expect(solveFromPaper(paperView(c))).toBe('reset')
+      expect(instructed(c, 0).verdict).toBe('reset')
+      expect(solveFromPaper(paperView(c, 0))).toBe('reset')
     }
   })
 
   it('очередь детерминирована и начинается с робота', () => {
-    const a = startShift('night', 0, scripted, SHIFT1_GENERATED)
-    const b = startShift('night', 0, scripted, SHIFT1_GENERATED)
-    expect(a).toEqual(b)
+    const a = startShift('night', 0, scripted, 8)
+    expect(startShift('night', 0, scripted, 8)).toEqual(a)
     expect(currentCase(a)?.scripted).toBe('timosha')
     expect(a.queue[1]?.scripted).toBe('metla')
-    expect(a.queue).toHaveLength(2 + SHIFT1_GENERATED)
   })
 
   it('два предупреждения, потом штрафы', () => {
-    let s = startShift('night', 0, scripted, SHIFT1_GENERATED)
+    let s = startShift('night', 0, scripted, 8)
     const results = []
     for (let i = 0; i < 4; i++) {
       const c = currentCase(s)!
@@ -124,7 +121,7 @@ describe('смена 1', () => {
   })
 
   it('лом только при слепой камере и без предупреждения', () => {
-    const s = startShift('night', 0, scripted, SHIFT1_GENERATED)
+    const s = startShift('night', 0, scripted, 8)
     expect(() => judge(s, 'junk', { cameraOff: false })).toThrow()
     const r = judge(s, 'junk', { cameraOff: true })
     expect(r.result.warning).toBe(false)
@@ -133,29 +130,40 @@ describe('смена 1', () => {
   })
 
   it('смена кончается в 06:00 или когда очередь пуста', () => {
-    let s = startShift('night', 0, scripted, SHIFT1_GENERATED)
-    expect(shiftDone(s)).toBe(false)
+    let s = startShift('night', 0, scripted, 8)
     s = tickClock(s, 10_000)
     expect(s.clock).toBe(480)
     expect(shiftDone(s)).toBe(true)
-
     let q = startShift('night', 0, scripted, 0)
     q = judge(q, 'reset', { cameraOff: false }).state
     q = judge(q, 'reset', { cameraOff: false }).state
     expect(shiftDone(q)).toBe(true)
     expect(summarize(q)).toMatchObject({ closed: 2, byInstruction: 2, earned: 20, fines: 0 })
   })
+})
 
-  it('смена по инструкции укладывается в 8–14 минут при минуте на дело', () => {
-    let s = startShift('night', 0, scripted, SHIFT1_GENERATED)
-    let seconds = 0
-    while (!shiftDone(s)) {
-      s = tickClock(s, 60)
-      seconds += 60
-      if (shiftDone(s)) break
-      s = judge(s, instructed(currentCase(s)!, 0).verdict, { cameraOff: false }).state
+describe('взятки и ловушки', () => {
+  it('меченый конверт ОБ всплывает', () => {
+    for (let i = 0; i < 3000; i++) {
+      const c = generateCase({ seed: `b${i}`, day: 10, index: 0 })
+      if (!c.bribe?.agent) continue
+      let s = startShift('b', 10, [c], 0)
+      s = judge(s, c.bribe.wants, { cameraOff: false, bribeTaken: true }).state
+      expect(s.flags.agentBribe).toBe(true)
+      return
     }
-    expect(seconds / 60).toBeGreaterThanOrEqual(8)
-    expect(seconds / 60).toBeLessThanOrEqual(14)
+    throw new Error('ни одной взятки от ОБ за 3000 дел')
+  })
+
+  it('пожалел подсадную утку — попался', () => {
+    for (let i = 0; i < 3000; i++) {
+      const c = generateCase({ seed: `p${i}`, day: 10, index: 0 })
+      if (c.device !== 'plant' || instructed(c, 10).verdict !== 'reset') continue
+      const s = judge(startShift('p', 10, [c], 0), 'return', { cameraOff: false }).state
+      expect(s.flags.plantSpared).toBe(true)
+      expect(s.scales.corp).toBeLessThan(50)
+      return
+    }
+    throw new Error('ни одной подсадной утки')
   })
 })

@@ -1,7 +1,7 @@
 // Общие типы симуляции. Никакого Pixi и DOM: эти модули гоняются в vitest и в ботах.
 
 /** Штампы. junk — тайный «Списать как лом», доступен только пока камера слепа. */
-export type Verdict = 'return' | 'reset' | 'scrap' | 'security' | 'refuse' | 'junk'
+export type Verdict = 'return' | 'reset' | 'scrap' | 'security' | 'refuse' | 'fraud' | 'junk'
 
 /** Что на самом деле с устройством. Часть видов появится в следующих сменах. */
 export type DeviceTruth =
@@ -17,7 +17,7 @@ export type DeviceTruth =
 export type OwnerTruth = 'honest' | 'liar' | 'abuser' | 'sympathizer' | 'agent'
 
 /** Изъян в бумагах — то, что игрок может найти сверкой. Один на дело в первых сменах. */
-export type Flaw = 'none' | 'serial_claim' | 'serial_plate' | 'model_claim' | 'warranty' | 'firmware'
+export type Flaw = 'none' | 'serial_claim' | 'serial_plate' | 'model_claim' | 'warranty' | 'firmware' | 'seal' | 'abuse'
 
 export interface Passport {
   model: string
@@ -52,6 +52,34 @@ export interface VisitorLook {
   build: 0 | 1
 }
 
+export interface LogEntry {
+  day: number
+  time: string
+  text: string
+}
+
+/** Что покажут инструменты. Видно игроку только то, что открыто к этому дню. */
+export interface ToolData {
+  log: LogEntry[]
+  /** Ответы на вопросы QUESTIONS по порядку; эталон — в content/tools.ts. */
+  answers: string[]
+  canon: string[]
+  memory: { spec: number; parts: { name: string; size: number }[] }
+  /** Целы ли пломбы (по SEALS). */
+  seals: boolean[]
+  /** Реакция на каждое слово STRESS_WORDS, 0..100. */
+  stress: number[]
+  /** Позывные устройств, с которыми есть связь. */
+  radio: string[]
+}
+
+export interface Bribe {
+  amount: number
+  wants: Verdict
+  /** Конверт от Отдела безопасности: проверка на честность. */
+  agent: boolean
+}
+
 export interface CaseFile {
   id: string
   modelId: string
@@ -70,6 +98,8 @@ export interface CaseFile {
   /** Что владелец скажет, если поймать его на расхождении. */
   excuse: string
   look: VisitorLook
+  tools: ToolData
+  bribe?: Bribe
 }
 
 export interface Scales {
@@ -93,4 +123,6 @@ export interface CaseResult {
   pay: number
   fine: number
   warning: boolean
+  device: DeviceTruth
+  bribe?: { amount: number; honored: boolean; agent: boolean }
 }

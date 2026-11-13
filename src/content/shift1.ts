@@ -5,7 +5,7 @@ import type { CaseFile } from '../sim/types'
 
 export const SHIFT1_GENERATED = 8
 
-export const TIMOSHA: CaseFile = {
+export const TIMOSHA: Omit<CaseFile, 'tools'> = {
   id: '0-timosha',
   scripted: 'timosha',
   modelId: 'timosha',
@@ -34,7 +34,7 @@ export const TIMOSHA: CaseFile = {
   look: { skin: 0, hair: 2, hairColor: 1, eyes: 1, brows: 1, nose: 1, mouth: 2, extra: 1, coat: 0, collar: 1, build: 0 },
 }
 
-export const METLA: CaseFile = {
+export const METLA: Omit<CaseFile, 'tools'> = {
   id: '0-metla',
   scripted: 'metla',
   modelId: 'metla',
