@@ -1,6 +1,7 @@
 import { Container, Graphics, Rectangle } from 'pixi.js'
 import { modelById } from '../content/models'
 import type { ColorKey } from '../content/palette'
+import { SELF_SCAN } from '../content/story'
 import { QUESTIONS, SEALS, STRESS_LIMIT, STRESS_WORDS, TOOL_DAY, TOOL_LABEL, type ToolId } from '../content/tools'
 import { formatDate } from '../sim/dates'
 import type { FieldId } from '../sim/rules'
@@ -19,6 +20,8 @@ export interface FolderHost {
   toast(text: string, color: ColorKey): void
   setLamp(on: boolean): void
   refreshInspect(): void
+  /** Сканер навели на приёмщика (третий акт). */
+  scanSelf(): void
 }
 
 export const FOLDER = { x: 4, y: 156, w: 168, h: 110 }
@@ -39,6 +42,7 @@ export class Folder extends Container {
   private scanned = false
   private scanning = false
   private radioDone = false
+  private selfScan = false
   lampOn = false
 
   constructor(
@@ -81,6 +85,7 @@ export class Folder extends Container {
     this.scanned = false
     this.scanning = false
     this.radioDone = false
+    this.selfScan = false
     if (this.lampOn) this.host.setLamp(false)
     this.lampOn = false
     this.current = 'passport'
@@ -156,13 +161,14 @@ export class Folder extends Container {
     const g = new Graphics()
     g.rect(FOLDER.x + 1, FOLDER.y + 11, FOLDER.w - 2, 10).fill(col('teal'))
     this.body.addChild(g)
-    this.put('«ДОМОВОЙ» · ПАСПОРТ УСТРОЙСТВА', 4, 12, 'white')
+    const human = !!c.escort
+    this.put(human ? 'КОМИТЕТ · УЧЁТНАЯ КАРТА ЖИЛЬЦА' : '«ДОМОВОЙ» · ПАСПОРТ УСТРОЙСТВА', 4, 12, 'white')
     const rows: [string, string, FieldId][] = [
-      ['Модель', c.passport.model, 'p.model'],
-      ['Серийный №', c.passport.serial, 'p.serial'],
-      ['Прошивка', c.passport.firmware, 'p.firmware'],
-      ['Выпущен', formatDate(c.passport.issued), 'p.issued'],
-      ['Гарантия до', formatDate(c.passport.warrantyUntil), 'p.warranty'],
+      [human ? 'Вид' : 'Модель', c.passport.model, 'p.model'],
+      [human ? 'Учётный №' : 'Серийный №', c.passport.serial, 'p.serial'],
+      [human ? 'Версия' : 'Прошивка', c.passport.firmware, 'p.firmware'],
+      [human ? 'Учтён' : 'Выпущен', formatDate(c.passport.issued), 'p.issued'],
+      [human ? 'Годен до' : 'Гарантия до', formatDate(c.passport.warrantyUntil), 'p.warranty'],
     ]
     rows.forEach(([k, v, id], i) => {
       const y = 25 + i * 13
@@ -218,7 +224,26 @@ export class Folder extends Container {
   }
 
   private renderMemory(c: CaseFile) {
-    this.put('СКАНЕР ПАМЯТИ', 5, 13, 'ink')
+    this.put(this.selfScan ? SELF_SCAN.title : 'СКАНЕР ПАМЯТИ', 5, 13, this.selfScan ? 'red' : 'ink')
+    if (this.selfScan) {
+      this.put('раздел        объём', 5, 25, 'slate')
+      SELF_SCAN.parts.forEach((p, i) => {
+        const y = 35 + i * 9
+        this.put(p.name, 5, y, p.name === 'я' || p.name === 'смены' ? 'red' : 'ink')
+        this.put(`${p.size} МБ`, 66, y, 'ink')
+      })
+      this.block(`${SELF_SCAN.model}. ${SELF_SCAN.note}`, 5, 37 + SELF_SCAN.parts.length * 9, FOLDER.w - 10, 'rust')
+      return
+    }
+    // В третьем акте сканер можно навести на себя: он работает на всём, что помнит.
+    if (this.day >= 14 && !this.scanning) {
+      this.button(SELF_SCAN.button, FOLDER.w - 60, 25, 55, () => {
+        this.selfScan = true
+        sfx.mismatch()
+        this.host.scanSelf()
+        this.render()
+      }, 'steel')
+    }
     if (!this.scanned) {
       const b = this.button(this.scanning ? 'СКАНИРУЮ...' : 'СКАН', 5, 25, 70, () => void this.scan())
       b.enabled = !this.scanning

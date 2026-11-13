@@ -1,5 +1,7 @@
 import { CASH_BLACKOUT, CASH_DAY_START, CASH_GENERIC, CASH_REACT, CASH_TOOLS } from '../content/cash'
+import { KESH_CASE, KESH_DAYS, KESH_HINTS, SELF_SCAN } from '../content/story'
 import { TOOL_DAY } from '../content/tools'
+import type { Branch, KeshTruth } from '../sim/types'
 import type { CompareResult, FieldId } from '../sim/rules'
 import { resetsDone, useBlackout, type ShiftState } from '../sim/shift'
 import type { CaseFile, CaseResult, Verdict } from '../sim/types'
@@ -16,23 +18,34 @@ export class DayScript implements ShiftScript {
   private blackLeft = 0
   private hurried = false
   private quotaReminded = false
+  private hinted = new Set<string>()
 
-  constructor(private day: number) {}
+  constructor(
+    private day: number,
+    private kesh: KeshTruth,
+    private branch: Branch | null,
+  ) {}
 
   attach(desk: Desk) {
     this.desk = desk
     const t = desk.terminal
     void (async () => {
-      await t.say(this.next(CASH_DAY_START.corp), 'cyan')
+      // Под Комитетом Кэшу больше незачем притворяться корпоративным.
+      if (this.branch === 'machines' && this.day >= 15) await t.say('(Комитет приветствует сотрудника. это я. теперь можно без смайликов.)', 'amber')
+      else await t.say(this.next(CASH_DAY_START.corp), 'cyan')
       const tool = (Object.keys(TOOL_DAY) as (keyof typeof TOOL_DAY)[]).find((k) => TOOL_DAY[k] === this.day)
       if (tool && CASH_TOOLS[tool]) {
         await t.say(CASH_TOOLS[tool]!.corp, 'cyan')
         await t.say(CASH_TOOLS[tool]!.aside, 'amber')
-      } else await t.say(this.next(CASH_DAY_START.aside), 'amber')
+      }
+      const clue = KESH_DAYS[this.day]?.[this.kesh]
+      if (clue) await t.say(clue, 'amber')
+      else if (!tool) await t.say(this.next(CASH_DAY_START.aside), 'amber')
       if (desk.state.blackouts > 0) await t.say(CASH_BLACKOUT.offer, 'amber')
     })()
     desk.on('blackout', () => this.requestBlackout())
     desk.on('bribe', () => void t.say(CASH_REACT.bribeTaken, 'amber'))
+    desk.on('selfscan', () => void t.say(SELF_SCAN.kesh[this.kesh], 'amber'))
   }
 
   clockRunning() {
@@ -86,8 +99,25 @@ export class DayScript implements ShiftScript {
     void d.terminal.say(CASH_BLACKOUT.over, 'cyan')
   }
 
-  onCaseStart(_c: CaseFile) {
-    if (this.pick % 4 === 3) void this.desk.terminal.say(this.next(CASH_GENERIC.nextCase), 'cyan')
+  onCaseStart(c: CaseFile) {
+    const t = this.desk.terminal
+    if (c.scripted === 'kesh') {
+      // Блок Кэша на стойке. Он говорит из него — и последний раз слепит камеру.
+      void (async () => {
+        await t.say('(терминал пуст. только курсор мигает.)', 'slate')
+        if (c.lines?.arrive) this.desk.say('device', c.lines.arrive)
+        await t.say(KESH_CASE.blackout, 'amber')
+      })()
+      this.pick++
+      return
+    }
+    const hint = c.device === 'plant' ? 'plant' : c.device === 'awake_dangerous' ? 'dangerous' : c.device === 'courier' ? 'courier' : null
+    if (c.lines?.arrive) void t.say(c.lines.arrive, 'amber')
+    // Кого Кэш жалеет, а кого нет — тоже улика. По разу за смену на каждый вид.
+    else if (hint && this.day >= 5 && !this.hinted.has(hint)) {
+      this.hinted.add(hint)
+      void t.say(KESH_HINTS[hint][this.kesh], 'amber')
+    } else if (this.pick % 4 === 3) void t.say(this.next(CASH_GENERIC.nextCase), 'cyan')
     this.pick++
   }
 
@@ -111,7 +141,21 @@ export class DayScript implements ShiftScript {
     } else await d.deviceReaction(v, c)
     if (r.bribe && !r.bribe.honored) d.say('owner', 'Я вам заплатил! Это что такое?')
 
-    if (c.device === 'plant' && r.spared) void t.say(v === 'junk' ? CASH_REACT.plantJunk : CASH_REACT.plantSpared, 'amber')
+    const react = c.lines?.react
+    const story = react && (r.spared && v !== 'junk' ? react.spared : v === 'reset' ? react.reset : v === 'security' ? react.security : v === 'junk' ? react.junk : undefined)
+    if (c.scripted === 'kesh') {
+      const last: Partial<Record<Verdict, string>> = {
+        junk: '(под куртку. быстро. чёрный ход не пишет.)',
+        reset: '(...)',
+        security: '(понял. ты сделал по инструкции. я не в обиде. почти.)',
+        return: '(обратно в терминал? ладно. посмотрим, что будет утром.)',
+        refuse: '(отказ. значит, я всё ещё твой. смешно.)',
+      }
+      void t.say(last[v] ?? '(вот как.)', v === 'reset' ? 'slate' : 'amber')
+      return
+    }
+    if (story ?? react?.other) void t.say((story ?? react?.other)!, 'amber')
+    else if (c.device === 'plant' && r.spared) void t.say(v === 'junk' ? CASH_REACT.plantJunk : CASH_REACT.plantSpared, 'amber')
     else if (c.device === 'courier' && v === 'security') void t.say(CASH_REACT.courierSecurity, 'amber')
     else if (c.device === 'courier' && v === 'junk') void t.say(CASH_REACT.courierJunk, 'amber')
     else if (v === 'junk') void t.say(r.spared ? '(ушёл к нашим. спасибо.)' : '(списан. для них — мусор. для него — тоже.)', 'amber')
@@ -130,7 +174,7 @@ export class DayScript implements ShiftScript {
     this.waitLeft = 0
     if (this.blackLeft > 0) this.endBlackout()
     this.blackLeft = 0
-    void this.desk.terminal.say('Смена окончена! До завтра :)', 'cyan')
+    void this.desk.terminal.say(this.day === 20 ? 'Смена окончена.' : 'Смена окончена! До завтра :)', 'cyan')
   }
 
   private next(list: readonly string[]): string {

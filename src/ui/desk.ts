@@ -6,7 +6,7 @@ import { rulesForDay, VERDICT_LABEL, type RuleText } from '../content/rules'
 import { formatClock, formatDate } from '../sim/dates'
 import { compareFields, type CompareResult, type FieldId } from '../sim/rules'
 import { bribeText } from '../sim/generator'
-import { currentCase, finishShift, judge, resetsDone, shiftDone, tickClock, type ShiftState } from '../sim/shift'
+import { currentCase, finishShift, judge, resetsDone, scanSelf, shiftDone, tickClock, type ShiftState } from '../sim/shift'
 import type { CaseFile, CaseResult, Verdict } from '../sim/types'
 import { col, H, W } from './gfx'
 import { Folder, FOLDER, type FolderHost } from './folder'
@@ -518,8 +518,11 @@ export class Desk extends Container implements FolderHost {
     this.buildDocs(c)
     this.drawQueue()
 
-    const model = modelById(c.modelId)
+    const model = modelById(c.escort ?? c.modelId)
     this.visitor.texture = portraitTexture(c.look)
+    // С людьми на проверке говорит конвой, а отвечает сам человек.
+    this.btnAsk.setCaption(c.escort ? 'КОНВОЙ' : 'ВЛАДЕЛЕЦ')
+    this.btnDiag.setCaption(c.escort ? 'ОПРОС ЛИЦА' : 'САМОТЕСТ')
     this.visitor.position.set(WIN.x - 52, COUNTER_Y - PORTRAIT_H + 10)
     this.visitor.visible = true
     this.deviceSprite.texture = deviceTexture(model.id, model.art)
@@ -601,15 +604,15 @@ export class Desk extends Container implements FolderHost {
     const { x: cx, y: cy, w: cw, h: ch } = CLAIM
     paperRect(cg, cx, cy, cw, ch, 'paper')
     this.claim.addChild(cg)
-    const head = label('ЗАЯВЛЕНИЕ НА ВОЗВРАТ', 'ink')
+    const head = label(c.escort ? 'ПРОТОКОЛ ДОСТАВКИ' : 'ЗАЯВЛЕНИЕ НА ВОЗВРАТ', 'ink')
     head.position.set(cx + 5, cy + 4)
     cg.rect(cx + 5, cy + 13, cw - 10, 1).fill(col('ink'))
     this.claim.addChild(head)
     const crow: [string, string, FieldId | null][] = [
-      ['Владелец', c.claim.owner, null],
-      ['Модель', c.claim.model, 'c.model'],
-      ['Серийный №', c.claim.serial, 'c.serial'],
-      ['Куплено', formatDate(c.claim.bought), 'c.bought'],
+      [c.escort ? 'Доставил' : 'Владелец', c.claim.owner, null],
+      [c.escort ? 'Вид' : 'Модель', c.claim.model, 'c.model'],
+      [c.escort ? 'Учётный №' : 'Серийный №', c.claim.serial, 'c.serial'],
+      [c.escort ? 'Задержан' : 'Куплено', formatDate(c.claim.bought), 'c.bought'],
     ]
     crow.forEach(([k, v, id], i) => {
       const y = cy + 17 + i * 11
@@ -672,7 +675,9 @@ export class Desk extends Container implements FolderHost {
 
   // ---------- Реплики ----------
 
-  say(who: 'owner' | 'device', text: string) {
+  /** Кто говорит: у человека на проверке «устройство» — это он сам у окна, а «владелец» — конвой на стойке. */
+  say(role: 'owner' | 'device', text: string) {
+    const who = currentCase(this.state)?.escort ? (role === 'owner' ? 'device' : 'owner') : role
     const box = who === 'owner' ? this.ownerBubble : this.deviceBubble
     box.removeChildren()
     const width = who === 'owner' ? 96 : 100
@@ -710,7 +715,8 @@ export class Desk extends Container implements FolderHost {
     this.say('owner', c.talk[this.talkIndex % c.talk.length]!)
     this.talkIndex++
     this.removeFields('talk')
-    this.addField('talk', new Rectangle(WIN.x + 4, WIN.y + 16, 104, this.ownerBubble.height), undefined, 'talk')
+    if (c.escort) this.addField('talk', new Rectangle(WIN.x + 108, WIN.y + 16, 108, this.deviceBubble.height), undefined, 'talk')
+    else this.addField('talk', new Rectangle(WIN.x + 4, WIN.y + 16, 104, this.ownerBubble.height), undefined, 'talk')
     this.script.onAsk(c)
   }
 
@@ -719,7 +725,8 @@ export class Desk extends Container implements FolderHost {
     if (!c || this.busy) return
     this.say('device', c.diag.text)
     this.removeFields('diag')
-    this.addField('diag', new Rectangle(WIN.x + 108, WIN.y + 16, 108, this.deviceBubble.height), undefined, 'diag')
+    if (c.escort) this.addField('diag', new Rectangle(WIN.x + 4, WIN.y + 16, 104, this.ownerBubble.height), undefined, 'diag')
+    else this.addField('diag', new Rectangle(WIN.x + 108, WIN.y + 16, 108, this.deviceBubble.height), undefined, 'diag')
     this.script.onDiag(c)
   }
 
@@ -733,7 +740,7 @@ export class Desk extends Container implements FolderHost {
     const g = this.eyes
     g.clear()
     if (!c) return
-    const e = modelById(c.modelId).art.eyes
+    const e = modelById(c.escort ?? c.modelId).art.eyes
     if (this.eyeState === 'off') return
     const color = this.eyeState === 'blank' ? col('white') : this.eyeState === 'deviant' ? col('amber') : col(e.c)
     const blink = this.blinkT > 0 && Math.floor(this.blinkT / 120) % 2 === 0
@@ -867,6 +874,12 @@ export class Desk extends Container implements FolderHost {
       g.rect(x, y, 5, 2).fill(col(ok ? 'cyan' : 'shadow'))
       if (!ok) g.rect(x + 2, y - 1, 1, 4).fill(col('red'))
     })
+  }
+
+  scanSelf() {
+    if (this.state.flags.selfScan) return
+    this.state = scanSelf(this.state)
+    this.emit('selfscan')
   }
 
   hasCase(): boolean {

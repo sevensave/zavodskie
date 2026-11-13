@@ -2,7 +2,10 @@
 import 'pixi.js/unsafe-eval'
 import { Application, Container, Graphics, Rectangle, Sprite, type Texture } from 'pixi.js'
 import type { BillId } from '../content/home'
-import { campaignOver, closeShift, newCampaign, payBills, SAVE_VERSION, setupShift, type Campaign } from '../sim/campaign'
+import { ACT_CARDS, BRANCH_CARDS } from '../content/story'
+import { BRANCH_DAY, campaignOver, closeShift, decideBranch, HUMANS_DAY, newCampaign, payBills, SAVE_VERSION, setupShift, type Campaign } from '../sim/campaign'
+import type { Branch } from '../sim/types'
+import { emptyGallery, EndingScene, GalleryView, type Gallery } from './ending'
 import { formatDate } from '../sim/dates'
 import type { ShiftState } from '../sim/shift'
 import { Card } from './card'
@@ -93,6 +96,17 @@ export async function boot(host: HTMLElement) {
   let desk: Desk | null = null
   let speed = 1
   let campaign: Campaign = (await loadCampaign()) ?? newCampaign(`ночь-${Math.floor(Math.random() * 1e9)}`)
+  const loaded = await loadSlot<Gallery>('gallery')
+  let gallery: Gallery = loaded && loaded.v === 1 ? loaded : emptyGallery()
+  let galleryView: GalleryView | null = null
+  const openGallery = () => {
+    if (galleryView) return
+    galleryView = new GalleryView(gallery, () => {
+      galleryView?.destroy({ children: true })
+      galleryView = null
+    })
+    app.stage.addChildAt(galleryView, app.stage.children.length - 1)
+  }
   const pause = buildPause(
     () => setPaused(false),
     () => {
@@ -101,6 +115,7 @@ export async function boot(host: HTMLElement) {
       void saveSlot('campaign', campaign)
       route()
     },
+    openGallery,
   )
   app.stage.addChildAt(pause, app.stage.children.length - 1)
 
@@ -115,8 +130,13 @@ export async function boot(host: HTMLElement) {
   /** Куда идти из сохранения: на смену, домой или к финальной карточке. */
   function route() {
     if (campaignOver(campaign)) {
+      if (!campaign.ending) campaign = { ...campaign, phase: 'ending', ending: 'utilized' }
+      if (!gallery.seen.includes(campaign.ending!)) {
+        gallery = { ...gallery, seen: [...gallery.seen, campaign.ending!] }
+        void saveSlot('gallery', gallery)
+      }
       setScene(
-        new Card('21 СМЕНА ПОЗАДИ', ['Город за окном всё ещё стоит.', 'Чем всё кончится — в следующей сборке: концовки пишутся.'], 'ЗАНОВО', () => {
+        new EndingScene(campaign, gallery, () => {
           campaign = newCampaign(`ночь-${Math.floor(Math.random() * 1e9)}`)
           void saveSlot('campaign', campaign)
           route()
@@ -137,12 +157,17 @@ export async function boot(host: HTMLElement) {
     void saveSlot('campaign', campaign)
     if (campaignOver(campaign)) return route()
     const lines = events.length ? events : ['Ночь прошла тихо. Даже холодильник молчал.']
-    setScene(new Card(`СМЕНА ${campaign.day + 1} · ${formatDate(campaign.day)}`, lines, 'К СТОЙКЕ', startShiftScene))
+    const act = ACT_CARDS[campaign.day]
+    const turn = campaign.branch && campaign.day === BRANCH_DAY + 2 ? BRANCH_CARDS[campaign.branch] : null
+    const head = act ?? turn
+    const card = () => setScene(new Card(`СМЕНА ${campaign.day + 1} · ${formatDate(campaign.day)}`, lines, 'К СТОЙКЕ', startShiftScene))
+    if (head) setScene(new Card(head.title, head.lines, 'ДАЛЬШЕ', card))
+    else card()
   }
 
   function startShiftScene() {
     const state = setupShift(campaign)
-    const script = campaign.day === 0 ? new Shift1Script() : new DayScript(campaign.day)
+    const script = campaign.day === 0 ? new Shift1Script() : new DayScript(campaign.day, campaign.kesh, campaign.branch)
     const d = new Desk(state, script, (s) => finish(s))
     d.on('cursor', (k: 'arrow' | 'inspect') => (cursor.texture = cursors[k]))
     setScene(d)
@@ -151,7 +176,7 @@ export async function boot(host: HTMLElement) {
   function finish(s: ShiftState) {
     campaign = closeShift(campaign, s)
     void saveSlot('campaign', campaign)
-    setScene(new Summary(s, campaign.last!, () => route()))
+    setScene(new Summary(s, campaign.last!, () => route(), campaign.branch))
   }
 
   function setPaused(on: boolean) {
@@ -184,10 +209,17 @@ export async function boot(host: HTMLElement) {
         return campaign
       },
       /** Перепрыгнуть на смену N (с нуля): для проверки поздних инструментов. */
-      jump(day: number) {
-        campaign = { ...campaign, day, phase: 'shift' }
+      jump(day: number, branch?: Branch) {
+        const b = day > BRANCH_DAY ? (branch ?? campaign.branch ?? decideBranch(campaign.scales)) : null
+        campaign = { ...campaign, day, phase: 'shift', ending: undefined, branch: b }
         route()
       },
+      /** Сразу к концовке: для проверки сцены и галереи. */
+      end(id: Campaign['ending']) {
+        campaign = { ...campaign, phase: 'ending', ending: id }
+        route()
+      },
+      humansDay: HUMANS_DAY,
     }
   }
 
@@ -203,12 +235,12 @@ export async function boot(host: HTMLElement) {
   void sfx
 }
 
-function buildPause(resume: () => void, restart: () => void): Container {
+function buildPause(resume: () => void, restart: () => void, gallery: () => void): Container {
   const c = new Container()
   const g = new Graphics()
   g.rect(0, 0, W, H).fill({ color: col('ink'), alpha: 0.85 })
-  g.rect(170, 80, 140, 110).fill(col('ink'))
-  g.rect(171, 81, 138, 108).fill(col('night'))
+  g.rect(170, 80, 140, 128).fill(col('ink'))
+  g.rect(171, 81, 138, 126).fill(col('night'))
   c.addChild(g)
   const t = label('ПЕРЕРЫВ', 'amber', 2)
   t.position.set(240 - t.width / 2, 88)
@@ -235,10 +267,12 @@ function buildPause(resume: () => void, restart: () => void): Container {
     restart()
   })
   b3.position.set(185, 148)
-  c.addChild(b1, b2, b3)
+  const b5 = new Button('КОНЦОВКИ', 110, 14, style, gallery)
+  b5.position.set(185, 166)
+  c.addChild(b1, b2, b3, b5)
   if (window.zavod) {
     const b4 = new Button('ВЫЙТИ', 110, 14, style, () => window.zavod?.quit())
-    b4.position.set(185, 166)
+    b4.position.set(185, 184)
     c.addChild(b4)
   }
   c.visible = false

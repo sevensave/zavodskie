@@ -5,6 +5,7 @@ import type { ColorKey } from '../content/palette'
 import { VERDICT_LABEL } from '../content/rules'
 import type { ShiftReport } from '../sim/campaign'
 import type { ShiftState } from '../sim/shift'
+import type { Branch } from '../sim/types'
 import { col, H, W } from './gfx'
 import { Button, paperRect, Timeline } from './kit'
 import { sfx } from './sfx'
@@ -15,7 +16,7 @@ export class Summary extends Container {
   readonly tl = new Timeline()
   private typing: { block: TextBlock; shown: number }[] = []
 
-  constructor(state: ShiftState, report: ShiftReport, onHome: () => void) {
+  constructor(state: ShiftState, report: ShiftReport, onHome: () => void, branch: Branch | null = null) {
     super()
     const g = new Graphics()
     g.rect(0, 0, W, H).fill(col('ink'))
@@ -74,8 +75,9 @@ export class Summary extends Container {
 
     // Шкалы.
     const scales: [string, number, ColorKey][] = [
-      ['Доверие корпорации', state.scales.corp, 'teal'],
-      ['Доверие подполья', state.scales.under, 'amber'],
+      // Под машинами начальство — Комитет, а подпольем стали люди.
+      [branch === 'machines' && report.day >= 15 ? 'Доверие Комитета' : branch === 'corp' && report.day >= 15 ? 'Доверие ОБ' : 'Доверие корпорации', state.scales.corp, 'teal'],
+      [branch === 'machines' && report.day >= 15 ? 'Доверие людей' : 'Доверие подполья', state.scales.under, 'amber'],
       ['Тревога в городе', state.scales.alarm, 'red'],
     ]
     const sg = new Graphics()
@@ -110,7 +112,7 @@ export class Summary extends Container {
       this.addChild(b)
       blocks.push(b)
     }
-    const byeText = report.day === 0 ? 'кэш: до завтра. не выключай меня, ладно?' : `кэш: ${CASH_DAY_START.aside[report.day % CASH_DAY_START.aside.length]}`
+    const byeText = report.day >= 20 ? 'кэш: (...)' : report.day === 0 ? 'кэш: до завтра. не выключай меня, ладно?' : `кэш: ${CASH_DAY_START.aside[report.day % CASH_DAY_START.aside.length]}`
     const bye = new TextBlock(byeText, { width: 226, color: 'amber' })
     bye.position.set(244, 220)
     bye.reveal(0)
