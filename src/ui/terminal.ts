@@ -1,4 +1,4 @@
-import { Container, Graphics, Sprite } from 'pixi.js'
+import { Container, Graphics, Rectangle, Sprite } from 'pixi.js'
 import type { ColorKey } from '../content/palette'
 import { col } from './gfx'
 import { Timeline } from './kit'
@@ -20,7 +20,7 @@ export class Terminal extends Container {
   static readonly H = 142
   private readonly logX = 5
   private readonly logY = 24
-  private readonly logW = 125
+  private readonly logW = 120
   private readonly logH = 88
 
   private screen = new Graphics()
@@ -28,7 +28,10 @@ export class Terminal extends Container {
   private title = new Sprite()
   private timerText = new Sprite()
   private log = new Container()
+  private scrollBar = new Graphics()
   private blocks: TextBlock[] = []
+  private contentHeight = 0
+  private scrollTop = 0
   private queue: Pending[] = []
   private typing: { block: TextBlock; shown: number; done: () => void } | null = null
   private noise = new Graphics()
@@ -62,6 +65,19 @@ export class Terminal extends Container {
     this.addChild(mask)
     this.log.mask = mask
     this.addChild(this.log)
+    this.scrollBar.eventMode = 'static'
+    this.scrollBar.hitArea = new Rectangle(127, this.logY, 4, this.logH)
+    this.scrollBar.cursor = 'pointer'
+    this.scrollBar.on('pointertap', (event) => {
+      event.stopPropagation()
+      const local = event.getLocalPosition(this)
+      this.setScrollPosition(((local.y - this.logY) / this.logH) * this.maxScroll())
+    })
+    this.addChild(this.scrollBar)
+    this.on('wheel', (event) => {
+      event.preventDefault()
+      if (event.deltaY !== 0) this.scrollBy(event.deltaY > 0 ? 22 : -22)
+    })
     this.addChild(this.noise)
 
     // Ящик под экраном. Внутри — тайный штамп, он выезжает только когда камера слепа.
@@ -132,17 +148,22 @@ export class Terminal extends Container {
     this.blocks = []
     this.queue = []
     this.typing = null
+    this.contentHeight = 0
+    this.scrollTop = 0
+    this.log.y = this.logY
+    this.drawScrollBar()
   }
 
   update(dtMs: number) {
     if (!this.typing && this.queue.length > 0) {
       const p = this.queue.shift()!
+      const wasAtBottom = this.maxScroll() - this.scrollTop < 2
       const block = new TextBlock(p.text, { width: this.logW, color: p.color })
       block.reveal(0)
       this.log.addChild(block)
       this.blocks.push(block)
       this.typing = { block, shown: 0, done: p.done }
-      this.layout()
+      this.layout(wasAtBottom)
     }
     if (this.typing) {
       const t = this.typing
@@ -174,20 +195,40 @@ export class Terminal extends Container {
     }
   }
 
-  private layout() {
+  private layout(followBottom = false) {
     let y = 0
     for (const b of this.blocks) {
       b.y = y
       y += b.lineCount * LINE + 3
     }
-    const overflow = y - this.logH
-    if (overflow > 0) {
-      for (const b of this.blocks) b.y -= overflow
-      while (this.blocks.length > 0 && this.blocks[0]!.y + this.blocks[0]!.lineCount * LINE < 0) {
-        this.blocks.shift()!.destroy()
-      }
-      // Обрезанную сверху реплику не показываем вовсе: читается хуже, чем её отсутствие.
-      for (const b of this.blocks) b.visible = b.y >= 0
-    }
+    this.contentHeight = y
+    this.scrollTop = followBottom ? this.maxScroll() : Math.min(this.scrollTop, this.maxScroll())
+    this.log.y = this.logY - this.scrollTop
+    this.drawScrollBar()
+  }
+
+  private maxScroll() {
+    return Math.max(0, this.contentHeight - this.logH)
+  }
+
+  private scrollBy(amount: number) {
+    this.setScrollPosition(this.scrollTop + amount)
+  }
+
+  private setScrollPosition(value: number) {
+    this.scrollTop = Math.max(0, Math.min(this.maxScroll(), value))
+    this.log.y = this.logY - this.scrollTop
+    this.drawScrollBar()
+  }
+
+  private drawScrollBar() {
+    const g = this.scrollBar
+    g.clear()
+    const x = 128
+    g.rect(x, this.logY, 2, this.logH).fill(col('slate'))
+    const max = this.maxScroll()
+    const thumbH = max === 0 ? this.logH : Math.max(12, Math.floor(this.logH * this.logH / this.contentHeight))
+    const thumbY = this.logY + (max === 0 ? 0 : Math.round((this.logH - thumbH) * this.scrollTop / max))
+    g.rect(x - 1, thumbY, 4, thumbH).fill(max === 0 ? col('slate') : col('amber'))
   }
 }

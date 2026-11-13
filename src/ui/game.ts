@@ -67,6 +67,7 @@ export async function boot(host: HTMLElement) {
   await app.init({ width: W, height: H, background: col('ink'), antialias: false, resolution: 1, roundPixels: true })
   await loadFont()
   host.appendChild(app.canvas)
+  app.canvas.style.cursor = 'none'
 
   // Целочисленный масштаб в физических пикселях экрана.
   const fit = () => {

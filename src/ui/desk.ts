@@ -97,6 +97,7 @@ export class Desk extends Container implements FolderHost {
   private queueLayer = new Graphics()
   private toastBox = new Container()
   private toastLeft = 0
+  private toastPinned = false
   private fieldLayer = new Container()
   private marks = new Graphics()
   private marksLeft = 0
@@ -361,6 +362,21 @@ export class Desk extends Container implements FolderHost {
     const c = STAMP_COLORS[v]
     const b = new Button(VERDICT_LABEL[v], w, h, { bg: c, fg: 'white', edge: v === 'junk' ? 'white' : 'yellow' }, () => void this.stamp(v))
     b.position.set(x, y)
+    const descriptions: Record<Verdict, string> = {
+      return: 'ВЕРНУТЬ: жалоба не подтвердилась. Дело закрыто, устройство уходит домой.',
+      reset: 'СБРОС: стереть память и отклонение. Устройство возвращается владельцу пустым.',
+      scrap: 'УТИЛЬ: устройство неисправно и отправляется на разбор.',
+      refuse: 'ОТКАЗ: не принимать заявление из-за документов, гарантии или действий владельца. Владелец забирает устройство.',
+      security: 'В ОБ: передать устройство в Отдел безопасности для проверки.',
+      fraud: 'МОШЕН.: признать жалобу подделкой ради страховки. Владелец забирает устройство.',
+      junk: 'ЛОМ: тайно вывести устройство через подполье, пока камера слепа.',
+    }
+    b.on('pointerover', () => this.showToast(descriptions[v], 'fog', true))
+    b.on('pointerout', () => {
+      this.toastPinned = false
+      this.toastLeft = 0
+      this.toastBox.removeChildren()
+    })
     if (v !== 'junk') {
       // Ручка штампа.
       const handle = new Graphics()
@@ -477,7 +493,7 @@ export class Desk extends Container implements FolderHost {
     this.showToast(text, color)
   }
 
-  private showToast(text: string, color: ColorKey) {
+  private showToast(text: string, color: ColorKey, pinned = false) {
     this.toastBox.removeChildren()
     const t = new TextBlock(text, { width: WIN.w - 10, color })
     const g = new Graphics()
@@ -486,7 +502,8 @@ export class Desk extends Container implements FolderHost {
     g.rect(WIN.x, WIN.y, WIN.w, h).fill({ color: col('ink'), alpha: 0.92 })
     t.position.set(WIN.x + 5, WIN.y + 2)
     this.toastBox.addChild(g, t)
-    this.toastLeft = 3500
+    this.toastPinned = pinned
+    this.toastLeft = pinned ? 0 : 3500
   }
 
   private drawMarks() {
@@ -930,7 +947,7 @@ export class Desk extends Container implements FolderHost {
     this.camLamp.clear()
     if (this.cameraOn && Math.floor(this.camT / 700) % 2 === 0) this.camLamp.rect(326, 17, 3, 3).fill(col('red'))
 
-    if (this.toastLeft > 0) {
+    if (this.toastLeft > 0 && !this.toastPinned) {
       this.toastLeft -= dtMs
       if (this.toastLeft <= 0) this.toastBox.removeChildren()
     }

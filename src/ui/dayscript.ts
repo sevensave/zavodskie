@@ -8,6 +8,7 @@ import type { CompareResult, FieldId } from '../sim/rules'
 import { resetsDone, useBlackout, type ShiftState } from '../sim/shift'
 import type { CaseFile, CaseResult, Verdict } from '../sim/types'
 import type { Desk, ShiftScript } from './desk'
+import { cashCaseGuidance } from './cashguidance'
 
 const BLACKOUT_DELAY = 5000
 const BLACKOUT = 9000
@@ -116,6 +117,7 @@ export class DayScript implements ShiftScript {
         await t.say('(терминал пуст. только курсор мигает.)', 'slate')
         if (c.lines?.arrive) this.desk.say('device', c.lines.arrive)
         await t.say(KESH_CASE.blackout, 'amber')
+        await t.say(cashCaseGuidance(c, this.day), 'cyan')
       })()
       this.pick++
       return
@@ -127,6 +129,7 @@ export class DayScript implements ShiftScript {
       this.hinted.add(hint)
       void t.say(KESH_HINTS[hint][this.kesh], 'amber')
     } else if (this.pick % 4 === 3) void t.say(this.next(CASH_GENERIC.nextCase), 'cyan')
+    void t.say(cashCaseGuidance(c, this.day), 'cyan')
     this.pick++
   }
 

@@ -4,6 +4,7 @@ html, body {
   background: #0b0a10;
   overflow: hidden;
   user-select: none;
+  cursor: none !important;
 }
 #stage {
   position: fixed;
@@ -15,5 +16,5 @@ html, body {
 #stage canvas {
   image-rendering: pixelated;
   image-rendering: crisp-edges;
-  cursor: none;
+  cursor: none !important;
 }

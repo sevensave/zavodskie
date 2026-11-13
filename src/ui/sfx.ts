@@ -18,11 +18,14 @@ let humGain: GainNode | null = null
 let fridgeGain: GainNode | null = null
 let droneGain: GainNode | null = null
 let blackGain: GainNode | null = null
+let musicGain: GainNode | null = null
 
 export type Mood = { kind: 'shift'; act: 0 | 1 | 2; machines: boolean } | { kind: 'home' } | { kind: 'quiet' } | { kind: 'ending' }
 let mood: Mood = { kind: 'shift', act: 0, machines: false }
 /** До следующего случайного звука фона, мс. */
 let eventLeft = 15000
+let musicLeft = 0
+let musicStep = 0
 
 function ac(): AudioContext | null {
   if (!ctx) {
@@ -121,6 +124,10 @@ function startAmbience() {
   const c = ac()
   if (!c || !amb || !noiseBuf) return
   started = true
+  // Тихая музыкальная подложка из мягких треугольных волн, без постоянного шипения.
+  musicGain = c.createGain()
+  musicGain.gain.value = 0.65
+  musicGain.connect(amb)
   // Дождь за окном: шум через полосовой фильтр.
   const rain = c.createBufferSource()
   rain.buffer = noiseBuf
@@ -204,23 +211,23 @@ function level(node: GainNode | null, v: number, time = 1.2) {
 function applyMood() {
   const m = mood
   if (m.kind === 'shift') {
-    level(rainGain, [0.03, 0.04, 0.055][m.act]!)
+    level(rainGain, [0.009, 0.012, 0.016][m.act]!)
     if (rainFilter && ctx) rainFilter.frequency.setTargetAtTime(m.act === 2 ? 1300 : 1800, ctx.currentTime, 0.5)
-    level(humGain, 0.012)
+    level(humGain, 0.004)
     level(fridgeGain, 0)
     level(droneGain, m.act === 2 ? (m.machines ? 0.03 : 0.022) : 0, 3)
   } else if (m.kind === 'home') {
-    level(rainGain, 0.012)
+    level(rainGain, 0.005)
     level(humGain, 0)
     level(fridgeGain, 0.02)
     level(droneGain, 0)
   } else if (m.kind === 'ending') {
-    level(rainGain, 0.025, 3)
+    level(rainGain, 0.008, 3)
     level(humGain, 0)
     level(fridgeGain, 0)
     level(droneGain, 0.015, 4)
   } else {
-    level(rainGain, 0.015)
+    level(rainGain, 0.004)
     level(humGain, 0)
     level(fridgeGain, 0)
     level(droneGain, 0)
@@ -237,6 +244,11 @@ export function setMood(m: Mood) {
 /** Случайные звуки фона: машины, гром, сирены — по акту. Вызывать каждый кадр. */
 export function tickAmbience(dtMs: number) {
   if (!started || muted) return
+  musicLeft -= dtMs
+  if (musicLeft <= 0) {
+    playMusicPhrase()
+    musicLeft = 7200
+  }
   eventLeft -= dtMs
   if (eventLeft > 0) return
   const m = mood
@@ -245,12 +257,27 @@ export function tickAmbience(dtMs: number) {
     if (m.act === 2 && r < 0.5) sfx.siren()
     else if (m.act >= 1 && r < 0.75) sfx.thunder()
     else sfx.car()
-    eventLeft = (m.act === 2 ? 14000 : 22000) + Math.random() * 20000
+    eventLeft = (m.act === 2 ? 26000 : 36000) + Math.random() * 30000
   } else if (m.kind === 'home') {
     // Капает кран. Подписка на сантехнику, видимо, не оплачена.
     for (let i = 0; i < 3; i++) tone(1900 + Math.random() * 300, 0.06, 'sine', 0.025, i * 0.9, 900, amb)
     eventLeft = 9000 + Math.random() * 9000
   } else eventLeft = 20000
+}
+
+/** Медленный минорный цикл: меняется по актам, но не перебивает реплики и эффекты. */
+function playMusicPhrase() {
+  if (!musicGain) return
+  const m = mood
+  const progression = m.kind === 'shift' && m.act === 2
+    ? [[110, 164.8, 220], [98, 146.8, 196], [87.3, 130.8, 174.6], [98, 146.8, 196]]
+    : [[110, 164.8, 220], [130.8, 196, 261.6], [146.8, 220, 293.7], [98, 146.8, 196]]
+  const chord = progression[musicStep % progression.length]!
+  const darkness = m.kind === 'quiet' ? 0.55 : 1
+  chord.forEach((f, i) => pad(f, 8.5, (i === 0 ? 0.018 : 0.009) * darkness, i * 0.08, musicGain))
+  const melody = [440, 392, 349.2, 329.6, 392, 349.2, 293.7, 329.6]
+  tone(melody[musicStep % melody.length]!, 1.8, 'sine', 0.012 * darkness, 0.7, undefined, musicGain)
+  musicStep++
 }
 
 /** Слепая камера: пока она слепа, в комнате тонко пищит. */
@@ -327,10 +354,10 @@ export const sfx = {
     tone(1700, 0.03, 'square', 0.03, 0.12)
   },
   /** Машина проехала по лужам за окном. */
-  car: () => noise(2.6, 0.05, 300, 0, 'bandpass', amb, 1400),
+  car: () => noise(2.6, 0.02, 300, 0, 'bandpass', amb, 1400),
   thunder: () => {
-    noise(3.5, 0.12, 120, 0, 'lowpass', amb, 50)
-    noise(1.2, 0.06, 400, 0.1, 'lowpass', amb, 80)
+    noise(3.5, 0.06, 120, 0, 'lowpass', amb, 50)
+    noise(1.2, 0.03, 400, 0.1, 'lowpass', amb, 80)
   },
   /** Далёкая сирена: два тона вверх-вниз, тихо. */
   siren: () => {
