@@ -355,6 +355,8 @@ export async function boot(host: HTMLElement) {
       daily: () => startDaily(),
       endless: (mods: EndlessMod[] = []) => startEndless(mods),
       modes: () => openModes(),
+      /** Арт для каталога лаунчера: обложка, шапка или снимок текущего экрана (PNG data URL). */
+      art: async (kind: 'cover' | 'hero' | 'screen') => (await import('./art')).renderArt(app, kind, root),
       /** Открыть всё для проверки режимов. */
       unlock() {
         meta = { ...meta, bestDay: Math.max(meta.bestDay, 21), finished: Math.max(meta.finished, 1) }
