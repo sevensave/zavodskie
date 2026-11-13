@@ -3,7 +3,6 @@ import type { CompareResult, FieldId } from '../sim/rules'
 import { currentCase, type ShiftState } from '../sim/shift'
 import type { CaseFile, CaseResult, Verdict } from '../sim/types'
 import type { Desk, ShiftScript } from './desk'
-import { cashCaseGuidance } from './cashguidance'
 
 const CAMERA_DELAY = 60_000
 const BLACKOUT = 9_000
@@ -71,12 +70,10 @@ export class Shift1Script implements ShiftScript {
       void t.say(CASH_TUTORIAL.firstVisitor).then(() => t.say(CASH_TUTORIAL.compare))
     } else if (c.scripted === 'metla') {
       void t.say(CASH_SPECIAL.arrive, 'amber')
-      void t.say(cashCaseGuidance(c, 0), 'cyan')
     } else {
       this.generic++
       if (this.generic === 1) void t.say('Дальше сами! Сверка номеров, гарантия, прошивка, самотест. Сверху вниз.', 'cyan')
       else if (this.generic % 3 === 0) void t.say(this.next(CASH_GENERIC.nextCase), 'cyan')
-      void t.say(cashCaseGuidance(c, 0), 'cyan')
     }
   }
 
